@@ -107,7 +107,6 @@ void decode_ibs_op(const uint8_t *raw, uint32_t raw_sz)
     uint64_t           dc_phys  = regs[6];
     uint64_t           br_tgt   = regs[7];
 
-    printf("caps=0x%08x\n", caps);
     printf("op_ctl=0x%016llx en=%d val=%d cnt_ctl=%d opmaxcnt=%u\n",
            (unsigned long long)op_ctl.val,
            (int)op_ctl.op_en, (int)op_ctl.op_val, (int)op_ctl.cnt_ctl,
@@ -121,6 +120,32 @@ void decode_ibs_op(const uint8_t *raw, uint32_t raw_sz)
            (unsigned long long)dc_lin, (unsigned long long)dc_phys);
 
     printf("branch_target=0x%016llx\n", (unsigned long long)br_tgt);
+}
+
+void decode_mem_op(const uint8_t *raw, uint32_t raw_sz)
+{   
+    if (raw_sz < 4 + 8*8) return;
+
+    uint32_t caps;
+    memcpy(&caps, raw, 4);
+
+    uint64_t regs[8];
+    for (int i = 0; i < 8; i++)
+        regs[i] = rd_u64_unaligned(raw + 4 + i*8);
+
+    union ibs_op_data  op_data  = { .val = regs[2] };
+    union ibs_op_data2 op_data2 = { .val = regs[3] };
+    union ibs_op_data3 op_data3 = { .val = regs[4] };
+    uint64_t           dc_lin   = regs[5];
+    uint64_t           dc_phys  = regs[6];
+
+    printf("mem_op: ld_op=%d st_op=%d dc_miss=%d dc_miss_lat=%u l2_miss=%d\n",
+           (int)op_data3.ld_op, (int)op_data3.st_op, (int)op_data3.dc_miss,
+           (unsigned)op_data3.dc_miss_lat, (int)op_data3.l2_miss);
+
+    printf("dc_lin_valid=%d dc_phys_valid=%d dc_lin=0x%016llx dc_phys=0x%016llx\n",
+           (int)op_data3.dc_lin_addr_valid, (int)op_data3.dc_phy_addr_valid,
+           (unsigned long long)dc_lin, (unsigned long long)dc_phys);
 }
 
 
@@ -186,7 +211,6 @@ void decode_ibs_fetch(const uint8_t *raw, uint32_t raw_sz)
     uint64_t fetch_phys = regs[2];
     union ic_ibs_extd_ctl extd_ctl = { .val = regs[3] };
 
-    printf("caps=0x%08x\n", caps);
     pr_ibs_fetch_ctl_zen3(fetch_ctl);
 
     printf("IbsFetchLinAd:\t%016" PRIx64 "\n", fetch_lin);
@@ -208,7 +232,7 @@ int main() {
     signal(SIGTERM, on_sigint);
    
     // 1) Discover IBS Op PMU type dynamically, change path to get fetch instead of op if needed
-    uint64_t ibs_type = read_uint64_t_file(IBS_FETCH_SYSFS);
+    uint64_t ibs_type = read_uint64_t_file(IBS_OP_SYSFS);
 
     // 2) Configure perf_event_attr for IBS Op sampling
     struct perf_event_attr attr;
@@ -217,7 +241,7 @@ int main() {
 
     attr.type = (uint32_t)ibs_type;
     // cnt_ctl: set bit 19 in config => see amd_ibs_tool guide
-    attr.config = IBS_FETCH_DEFAULT;
+    attr.config = IBS_OP_DEFAULT;
     // sample_period must have low 4 bits ignored by HW; set >= 0x10
     attr.sample_period = 0x1000; // tune this (lower => more samples, more overhead)
 
@@ -377,7 +401,8 @@ int main() {
                     printf("raw_sz=%u raw=%p\n", raw_sz, (void *)raw);
 
                     //decode_ibs_op(raw, raw_sz);
-                    decode_ibs_fetch(raw, raw_sz);
+                    //decode_ibs_fetch(raw, raw_sz);
+                    decode_mem_op(raw, raw_sz);
                     p += raw_sz;
                 }
             } else {
