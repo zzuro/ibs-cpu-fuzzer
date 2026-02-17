@@ -139,9 +139,23 @@ void decode_mem_op(const uint8_t *raw, uint32_t raw_sz)
     uint64_t           dc_lin   = regs[5];
     uint64_t           dc_phys  = regs[6];
 
-    printf("mem_op: ld_op=%d st_op=%d dc_miss=%d dc_miss_lat=%u l2_miss=%d\n",
-           (int)op_data3.ld_op, (int)op_data3.st_op, (int)op_data3.dc_miss,
-           (unsigned)op_data3.dc_miss_lat, (int)op_data3.l2_miss);
+    printf("mem_op: ld=%d st=%d dc_miss=%d l2_miss=%d lat=%u "
+       "uc=%d wc=%d locked=%d misal=%d sw_pf=%d width=%u linV=%d phyV=%d open=%u tlb_lat=%u\n",
+       (int)op_data3.ld_op,
+       (int)op_data3.st_op,
+       (int)op_data3.dc_miss,
+       (int)op_data3.l2_miss,
+       (unsigned)op_data3.dc_miss_lat,
+       (int)op_data3.dc_uc_mem_acc,
+       (int)op_data3.dc_wc_mem_acc,
+       (int)op_data3.dc_locked_op,
+       (int)op_data3.dc_mis_acc,
+       (int)op_data3.sw_pf,
+       (unsigned)op_data3.op_mem_width,
+       (int)op_data3.dc_lin_addr_valid,
+       (int)op_data3.dc_phy_addr_valid,
+       (unsigned)op_data3.op_dc_miss_open_mem_reqs,
+       (unsigned)op_data3.tlb_refill_lat);
 
     printf("dc_lin_valid=%d dc_phys_valid=%d dc_lin=0x%016llx dc_phys=0x%016llx\n",
            (int)op_data3.dc_lin_addr_valid, (int)op_data3.dc_phy_addr_valid,
