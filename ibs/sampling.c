@@ -273,6 +273,7 @@ int main() {
     attr.exclude_hv     = 0;
     attr.exclude_guest  = 0;
     attr.exclude_idle   = 0;
+    attr.exclude_host   = 0;
 
     // Ask for precise IP when possible (may be ignored for IBS; harmless)
     attr.pinned = 0;

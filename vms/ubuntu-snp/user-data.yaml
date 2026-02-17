@@ -1,0 +1,12 @@
+#cloud-config
+ssh_pwauth: True
+chpasswd:
+  expire: false
+  users:
+  - {name: ubuntu, password: mypassword, type: text}
+users:
+  - name: ubuntu
+    groups: users, sudo
+    shell: /usr/bin/bash
+    ssh_authorized_keys:
+      - ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC8JuN5FP5SYK+reL7bTZd/8x1P/WwPrXsZJj2IxSVcACukezOxhG2FnJzqN6YhsZ4Aq+mR0Ce5m+mvmTTxJSgF7vqT6KAH20rWo1GqLlT4DRvPL5wN87i15zp90Uf9/3EXl8UVTD4zvOTCVI/qbVmn8hqBWlxHPhmYoN9/FcmsicDqJvcN5MXBjug4tWnjL27o6oimb5FHXSkauBAiCS54087EoiTFMXxP9WExT03SeoNqoSWBLC2/0b0A7NyUMe+VDlRCE7Fuqj/F8PFtZj3x3b1os6NrSo3sRG0adsUbpGDW2RjA70i0OvuQ2FgrV5p3fg/tCNq9S341r0Oj07NsKh+H46D0s72jFZ4Ctc7SbdaYPdoqxch1+iQHAtEE0w4ukQr2PHspJRFRhDQNgKOppzWvPNJ8t5x/lDUZE/M6+aje+12Bbjimyfc+c4O70rXoC8N7GjIb00hueW164jmbHAB+PTeg7AFUvVGB0sp0GGRYzDGeDAgSAp3AW1Q8QHM= avezzu@lagzilla
