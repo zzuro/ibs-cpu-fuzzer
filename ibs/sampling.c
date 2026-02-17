@@ -23,60 +23,13 @@
 
 
 //src: https://github.com/torvalds/linux/blob/master/arch/x86/include/asm/perf_event.h#L677
-#define IBS_FETCH_DEFAULT	((1ULL<<57))
+#define IBS_FETCH_DEFAULT	(1ULL<<57)
 #define IBS_OP_DEFAULT		(1ULL<<19)
 
 
 #define IBS_FETCH_SYSFS "/sys/bus/event_source/devices/ibs_fetch/type"
 #define IBS_OP_SYSFS    "/sys/bus/event_source/devices/ibs_op/type"
 
-struct sample_id
-{
-    uint32_t pid, tid;              /* if PERF_SAMPLE_TID set */
-    uint64_t time;                  /* if PERF_SAMPLE_TIME set */
-    uint64_t id;                    /* if PERF_SAMPLE_ID set */
-    uint64_t stream_id;             /* if PERF_SAMPLE_STREAM_ID set  */
-    uint32_t cpu, res;              /* if PERF_SAMPLE_CPU set */
-    uint64_t identifier;            /* if PERF_SAMPLE_IDENTIFIER set */
-};
-
-struct perf_sample_event {
-  struct perf_event_header hdr;
-  uint64_t    sample_id;                // if PERF_SAMPLE_IDENTIFIER
-  uint64_t    ip;                       // if PERF_SAMPLE_IP
-  uint32_t    pid, tid;                 // if PERF_SAMPLE_TID
-  uint64_t    time;                     // if PERF_SAMPLE_TIME
-  uint64_t    addr;                     // if PERF_SAMPLE_ADDR
-  uint64_t    id;                       // if PERF_SAMPLE_ID
-  uint64_t    stream_id;                // if PERF_SAMPLE_STREAM_ID
-  uint32_t    cpu, res;                 // if PERF_SAMPLE_CPU
-  uint64_t    period;                   // if PERF_SAMPLE_PERIOD
-  struct      read_format *v;           // if PERF_SAMPLE_READ
-  uint64_t    nr;                       // if PERF_SAMPLE_CALLCHAIN
-  uint64_t    *ips;                     // if PERF_SAMPLE_CALLCHAIN
-  uint32_t    size_raw;                 // if PERF_SAMPLE_RAW
-  char        *data_raw;                // if PERF_SAMPLE_RAW
-  uint64_t    bnr;                      // if PERF_SAMPLE_BRANCH_STACK
-  struct      perf_branch_entry *lbr;   // if PERF_SAMPLE_BRANCH_STACK
-  uint64_t    abi;                      // if PERF_SAMPLE_REGS_USER
-  uint64_t    *regs;                    // if PERF_SAMPLE_REGS_USER
-  uint64_t    size_stack;               // if PERF_SAMPLE_STACK_USER
-  char        *data_stack;              // if PERF_SAMPLE_STACK_USER
-  uint64_t    dyn_size_stack;           // if PERF_SAMPLE_STACK_USER
-  uint64_t    weight;                   // if PERF_SAMPLE_WEIGHT
-  uint64_t    data_src;                 // if PERF_SAMPLE_DATA_SRC
-  uint64_t    transaction;              // if PERF_SAMPLE_TRANSACTION
-  uint64_t    abi_intr;                 // if PERF_SAMPLE_REGS_INTR
-  uint64_t    *regs_intr;               // if PERF_SAMPLE_REGS_INTR
-};
-
-
-struct perf_record_lost {
-    struct perf_event_header header;
-    uint64_t    id;
-    uint64_t    lost;
-    struct sample_id sample_id;
-};
 
 static volatile sig_atomic_t g_stop = 0;
 
@@ -133,7 +86,6 @@ static inline uint64_t rd_u64_unaligned(const void *p)
     return v;
 }
 
-
 //src: https://github.com/torvalds/linux/blob/master/tools/perf/util/amd-sample-raw.c#L235
 void decode_ibs_op(const uint8_t *raw, uint32_t raw_sz)
 {
@@ -171,6 +123,83 @@ void decode_ibs_op(const uint8_t *raw, uint32_t raw_sz)
     printf("branch_target=0x%016llx\n", (unsigned long long)br_tgt);
 }
 
+
+//this might change base on Zen version
+static void pr_ibs_fetch_ctl_zen3(union ibs_fetch_ctl reg)
+{
+    static const char * const ic_miss_strs[] = {
+        " IcMiss 0",
+        " IcMiss 1",
+    };
+
+    static const char * const l1tlb_pgsz_strs[] = {
+        " L1TlbPgSz 4KB",
+        " L1TlbPgSz 2MB",
+        " L1TlbPgSz 1GB",
+        " L1TlbPgSz RESERVED"
+    };
+
+    const char *ic_miss_str = ic_miss_strs[reg.ic_miss & 0x1];
+    const char *l1tlb_pgsz_str = "";
+
+    if (reg.phy_addr_valid) {
+        uint32_t idx = reg.l1tlb_pgsz & 0x3;
+        l1tlb_pgsz_str = l1tlb_pgsz_strs[idx];
+    }
+
+    const char *l2miss_str = "";
+    if (reg.fetch_comp) {
+        l2miss_str = reg.fetch_l2_miss ? " L2Miss 1" : " L2Miss 0";
+    }
+
+    printf("ibs_fetch_ctl:\t%016" PRIx64
+           " MaxCnt %7u Cnt %7u Lat %5u En %u Val %u Comp %u%s"
+           " PhyAddrValid %u%s L1TlbMiss %u L2TlbMiss %u RandEn %u%s\n",
+           reg.val,
+           (unsigned)(reg.fetch_maxcnt << 4),
+           (unsigned)(reg.fetch_cnt << 4),
+           (unsigned)reg.fetch_lat,
+           (unsigned)reg.fetch_en,
+           (unsigned)reg.fetch_val,
+           (unsigned)reg.fetch_comp,
+           ic_miss_str,
+           (unsigned)reg.phy_addr_valid,
+           l1tlb_pgsz_str,
+           (unsigned)reg.l1tlb_miss,
+           (unsigned)reg.l2tlb_miss,
+           (unsigned)reg.rand_en,
+           l2miss_str);
+}
+
+void decode_ibs_fetch(const uint8_t *raw, uint32_t raw_sz)
+{
+    if (raw_sz < 4 + 4*8) return;
+    uint32_t caps;
+    memcpy(&caps, raw, 4);
+
+    uint64_t regs[4];
+    for (int i = 0; i < 4; i++)
+        regs[i] = rd_u64_unaligned(raw + 4 + i*8);
+    
+    union ibs_fetch_ctl fetch_ctl = { .val = regs[0] };
+    uint64_t fetch_lin  = regs[1];
+    uint64_t fetch_phys = regs[2];
+    union ic_ibs_extd_ctl extd_ctl = { .val = regs[3] };
+
+    printf("caps=0x%08x\n", caps);
+    pr_ibs_fetch_ctl_zen3(fetch_ctl);
+
+    printf("IbsFetchLinAd:\t%016" PRIx64 "\n", fetch_lin);
+
+    if (fetch_ctl.phy_addr_valid)
+        printf("IbsFetchPhysAd:\t%016" PRIx64 "\n", fetch_phys);
+    else
+        printf("IbsFetchPhysAd:\t<invalid> (%016" PRIx64 ")\n", fetch_phys);
+
+    printf("IbsIcExtdCtl:\t%016" PRIx64 "\n", extd_ctl.val);
+    
+}  
+
 int main() {
 
     int duration_s = 1;
@@ -179,7 +208,7 @@ int main() {
     signal(SIGTERM, on_sigint);
    
     // 1) Discover IBS Op PMU type dynamically, change path to get fetch instead of op if needed
-    uint64_t ibs_type = read_uint64_t_file(IBS_OP_SYSFS);
+    uint64_t ibs_type = read_uint64_t_file(IBS_FETCH_SYSFS);
 
     // 2) Configure perf_event_attr for IBS Op sampling
     struct perf_event_attr attr;
@@ -188,7 +217,7 @@ int main() {
 
     attr.type = (uint32_t)ibs_type;
     // cnt_ctl: set bit 19 in config => see amd_ibs_tool guide
-    attr.config = IBS_OP_DEFAULT;
+    attr.config = IBS_FETCH_DEFAULT;
     // sample_period must have low 4 bits ignored by HW; set >= 0x10
     attr.sample_period = 0x1000; // tune this (lower => more samples, more overhead)
 
@@ -268,7 +297,6 @@ int main() {
 
     
     time_t end_time = time(NULL) + duration_s;
-
     struct pollfd pfd;
     memset(&pfd, 0, sizeof(pfd));
     pfd.fd = fd;
@@ -348,8 +376,8 @@ int main() {
                     const uint8_t *raw = p; // <-- THIS IS THE RAW PAYLOAD
                     printf("raw_sz=%u raw=%p\n", raw_sz, (void *)raw);
 
-                    decode_ibs_op(raw, raw_sz);
-
+                    //decode_ibs_op(raw, raw_sz);
+                    decode_ibs_fetch(raw, raw_sz);
                     p += raw_sz;
                 }
             } else {
