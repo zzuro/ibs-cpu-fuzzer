@@ -4,7 +4,7 @@ RPB=1
 # Only create login.img if it does not exist
 if [ ! -f qemu/login.img ]; then
   echo "Creating login.img..."
-  cloud-localds login.img user-data.yaml
+  cloud-localds qemu/login.img qemu/user-data.yaml
 else
   echo "login.img already exists. Skipping cloud-localds."
 fi

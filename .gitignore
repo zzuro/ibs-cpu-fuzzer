@@ -21,7 +21,7 @@ Desktop.ini
 ################################################################################
 # Ignore everything in .vscode by default
 .vscode/*
-
+.vscode
 # But allow shared workspace settings (optional — good for teams)
 !.vscode/settings.json
 !.vscode/tasks.json
