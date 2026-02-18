@@ -192,5 +192,6 @@ ibs_workload_store
 
 *.img
 *.iso
+*.raw
 
 vmlinuz

@@ -5,16 +5,17 @@ import threading
 from pathlib import Path
 
 QEMU_PATTERN = "qemu-system-x86_64"
+KVMTOOL_PATTERN = "lkvm"
 SAMPLER_PATH = "./sampling"
 LOG_FILE = "sampling.log"
 
 # Global lock for synchronized file writes
 log_lock = threading.Lock()
-
+TID_COUNT = 0
 
 def find_qemu_pid() -> str:
     try:
-        output = subprocess.check_output(["pgrep", "-f", QEMU_PATTERN], text=True)
+        output = subprocess.check_output(["pgrep", "-f", KVMTOOL_PATTERN], text=True)
         pids = [p.strip() for p in output.splitlines() if p.strip()]
         if not pids:
             raise subprocess.CalledProcessError(1, "pgrep")
@@ -34,23 +35,26 @@ def get_tids(pid: str) -> list[str]:
 
 
 def run_sampling_for_tid(tid: str) -> None:
+    global TID_COUNT
     cmd = ["sudo", SAMPLER_PATH, tid]
 
     try:
         res = subprocess.run(cmd, text=True, capture_output=True)
 
-        with log_lock:
-            with open(LOG_FILE, "a") as f:
-                f.write(f"\n===== TID {tid} =====\n")
+        if res.stdout.strip() != "":
+            with log_lock:
+                TID_COUNT += 1
+                with open(LOG_FILE, "a") as f:
+                    f.write(f"\n===== TID {tid} =====\n")
 
-                if res.stdout:
-                    f.write(res.stdout)
+                    if res.stdout:
+                        f.write(res.stdout)
 
-                if res.stderr:
-                    f.write("\n--- STDERR ---\n")
-                    f.write(res.stderr)
+                    if res.stderr:
+                        f.write("\n--- STDERR ---\n")
+                        f.write(res.stderr)
 
-                f.write("\n")
+                    f.write("\n")
 
     except FileNotFoundError:
         print(f"Sampler not found: {SAMPLER_PATH}")
@@ -58,6 +62,7 @@ def run_sampling_for_tid(tid: str) -> None:
 
 
 def main():
+    global TID_COUNT
     if os.path.exists(LOG_FILE):
         os.remove(LOG_FILE)
 
@@ -66,7 +71,6 @@ def main():
 
     print(f"QEMU PID: {pid}")
     print(f"Found {len(tids)} TIDs: {', '.join(tids)}")
-
     threads = []
     for tid in tids:
         t = threading.Thread(target=run_sampling_for_tid, args=(tid,))
@@ -76,6 +80,8 @@ def main():
     for t in threads:
         t.join()
 
+    with open(LOG_FILE, "a") as f:
+        f.write(f"\nTotal TIDs sampled: {TID_COUNT}\n")
 
 if __name__ == "__main__":
     main()

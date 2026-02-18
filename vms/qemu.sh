@@ -2,7 +2,7 @@ CBITPOS=51
 RPB=1
 
 # Only create login.img if it does not exist
-if [ ! -f login.img ]; then
+if [ ! -f qemu/login.img ]; then
   echo "Creating login.img..."
   cloud-localds login.img user-data.yaml
 else
@@ -13,8 +13,8 @@ qemu-system-x86_64 \
   -enable-kvm \
   -nographic \
   -machine q35 -smp 6 -m 6G \
-  -drive "if=virtio,format=qcow2,file=ubuntu-24.04-server-cloudimg-amd64.img" \
-  -drive if=virtio,format=raw,file=login.img \
+  -drive "if=virtio,format=qcow2,file=qemu/ubuntu-24.04-server-cloudimg-amd64.img" \
+  -drive if=virtio,format=raw,file=qemu/login.img \
   -net nic,model=e1000 -net user,hostfwd=tcp::2222-:22 \
   -cpu EPYC-v4 \
   -machine memory-encryption=sev0,vmport=off \

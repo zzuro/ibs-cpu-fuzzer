@@ -457,8 +457,5 @@ int main(int argc, char *argv[]) {
     munmap(base, mmap_sz);
     close(fd);
 
-    printf("\nDone.\n");
-    return 0;
-
     return 0;
 }
