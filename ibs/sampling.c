@@ -160,6 +160,8 @@ void decode_mem_op(const uint8_t *raw, uint32_t raw_sz)
     printf("dc_lin_valid=%d dc_phys_valid=%d dc_lin=0x%016llx dc_phys=0x%016llx\n",
            (int)op_data3.dc_lin_addr_valid, (int)op_data3.dc_phy_addr_valid,
            (unsigned long long)dc_lin, (unsigned long long)dc_phys);
+
+    printf("micro_op=%d\n", (int)op_data.op_microcode);
 }
 
 
@@ -238,9 +240,14 @@ void decode_ibs_fetch(const uint8_t *raw, uint32_t raw_sz)
     
 }  
 
-int main() {
+int main(int argc, char *argv[]) {
 
-    int duration_s = 1;
+    if (argc < 2) {
+        fprintf(stderr, "Usage: %s <PID> \n", argv[0]);
+        return 1;
+    }
+
+    int duration_s = 3;
 
     signal(SIGINT, on_sigint);
     signal(SIGTERM, on_sigint);
@@ -260,11 +267,11 @@ int main() {
     attr.sample_period = 0x1000; // tune this (lower => more samples, more overhead)
 
     // Get RAW IBS record + CPU number
-    attr.sample_type =  PERF_SAMPLE_CPU | PERF_SAMPLE_RAW;
+    attr.sample_type =  PERF_SAMPLE_CPU | PERF_SAMPLE_RAW | PERF_SAMPLE_TID;
 
     // We want samples in an mmap ring buffer (not read() counts)
     attr.disabled = 1;
-    attr.inherit = 1;
+    attr.inherit = 0; 
 
     // IBS in kernel historically may ignore exclude_* (your doc notes this),
     // but set them all to 0 to match.
@@ -291,8 +298,8 @@ int main() {
     //
     // This example does per-process (pid = 0 means "calling process") and any CPU (-1).
     // If you want system-wide, use pid = -1 and a specific CPU >= 0 (and likely open per CPU).
-    pid_t pid = -1;
-    int cpu = 0;
+    pid_t pid = atoi(argv[1]);
+    int cpu = -1; //we cannot use cpu -1 if inherit is set
     int group_fd = -1;
     unsigned long flags = PERF_FLAG_FD_CLOEXEC;
 
@@ -389,6 +396,17 @@ int main() {
                 }
                     
                 p += sizeof(struct perf_event_header);
+
+                if (attr.sample_type & PERF_SAMPLE_TID)
+                {
+                    if (p + 8 > end)
+                        return -1;
+                    uint32_t pid = *(const uint32_t *)p;
+                    p += 4;
+                    uint32_t tid = *(const uint32_t *)p;
+                    p += 4;
+                    printf("pid=%u tid=%u ", pid, tid);
+                }
 
                 if (attr.sample_type & PERF_SAMPLE_CPU)
                 {
