@@ -25,21 +25,88 @@
 #include <fcntl.h>
 
 
+extern char resume;
+
 #include "include/instruction.h"
 #include "include/compiler.h"
 
 
 #define PAGE_SIZE KB(4)
+#define TF        0x100
 
-
-uint8_t instr[MAX_INSN_LENGTH];
+char instr[MAX_INSN_LENGTH];
 result_t result;
+
+void* packet_buffer;
+char* packet;
+
+state_t inject_state={
+	.rax=0,
+	.rbx=0,
+	.rcx=0,
+	.rdx=0,
+	.rsi=0,
+	.rdi=0,
+	.r8=0,
+	.r9=0,
+	.r10=0,
+	.r11=0,
+	.r12=0,
+	.r13=0,
+	.r14=0,
+	.r15=0,
+	.rbp=0,
+	.rsp=0,
+};
 
 int inject(int insn_size)
 {
-    
-}
+    packet=(uint8_t*)packet_buffer+PAGE_SIZE-insn_size;
 
+
+    for(int i=0; i<insn_size; i++) {
+        packet[i]=instr[i];
+    }
+
+    __asm__ __volatile__ ("\
+			mov %[rax], %%rax \n\
+			mov %[rbx], %%rbx \n\
+			mov %[rcx], %%rcx \n\
+			mov %[rdx], %%rdx \n\
+			mov %[rsi], %%rsi \n\
+			mov %[rdi], %%rdi \n\
+			mov %[r8],  %%r8  \n\
+			mov %[r9],  %%r9  \n\
+			mov %[r10], %%r10 \n\
+			mov %[r11], %%r11 \n\
+			mov %[r12], %%r12 \n\
+			mov %[r13], %%r13 \n\
+			mov %[r14], %%r14 \n\
+			mov %[r15], %%r15 \n\
+			mov %[rbp], %%rbp \n\
+			jmp *%[packet]    \n\
+            .global resume    \n\
+			resume:           \n\
+			"
+			: /* no output */
+			: [rax]"m"(inject_state.rax),
+			  [rbx]"m"(inject_state.rbx),
+			  [rcx]"m"(inject_state.rcx),
+			  [rdx]"m"(inject_state.rdx),
+			  [rsi]"m"(inject_state.rsi),
+			  [rdi]"m"(inject_state.rdi),
+			  [r8]"m"(inject_state.r8),
+			  [r9]"m"(inject_state.r9),
+			  [r10]"m"(inject_state.r10),
+			  [r11]"m"(inject_state.r11),
+			  [r12]"m"(inject_state.r12),
+			  [r13]"m"(inject_state.r13),
+			  [r14]"m"(inject_state.r14),
+			  [r15]"m"(inject_state.r15),
+			  [rbp]"m"(inject_state.rbp),
+			  [packet]"m"(packet)
+			);
+}
 
 int poll_instr(int fd)
 {
@@ -73,10 +140,7 @@ int poll_instr(int fd)
 
 int main()
 {
-    int fd;
-    void *packet_buffer;
-
-    fd = open("/dev/virtio-ports/insnexec", O_RDWR);
+    int fd = open("/dev/virtio-ports/insnexec", O_RDWR);
     if (fd < 0)
     {
         perror("open");

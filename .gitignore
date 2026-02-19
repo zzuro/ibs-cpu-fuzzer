@@ -189,6 +189,8 @@ secrets.*
 sampling
 ibs_workload_cache
 ibs_workload_store
+guest
+injector
 
 *.img
 *.iso
