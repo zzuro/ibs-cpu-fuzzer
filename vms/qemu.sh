@@ -21,4 +21,7 @@ qemu-system-x86_64 \
   -object memory-backend-memfd,id=ram1,size=6G,share=true,prealloc=false \
   -machine memory-backend=ram1 \
   -object sev-snp-guest,id=sev0,cbitpos=${CBITPOS},reduced-phys-bits=${RPB},kernel-hashes=off,policy=0x30000 \
-  -bios /usr/share/ovmf/OVMF.amdsev.fd
+  -bios /usr/share/ovmf/OVMF.amdsev.fd \
+  -device virtio-serial \
+  -chardev socket,id=execsock,path=/tmp/insnexec.sock,server=on,wait=off \
+  -device virtserialport,chardev=execsock,name=insnexec

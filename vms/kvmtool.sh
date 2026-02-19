@@ -7,3 +7,6 @@
   --param "console=ttyS0 root=/dev/vda1" \
   --network mode=user \
   --kernel /home/avezzu/linux-6.17/arch/x86_64/boot/bzImage
+
+
+#modify /etc/fstab if efi mount failed
