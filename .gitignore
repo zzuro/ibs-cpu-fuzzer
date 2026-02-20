@@ -181,6 +181,39 @@ secrets.*
 *.key
 *.pem
 
+# =========================
+# Linux Kernel Module Build
+# =========================
+
+# Object files
+*.o
+*.ko
+*.mod
+*.mod.c
+*.symvers
+*.order
+
+# Kernel build system files
+Module.symvers
+modules.order
+.tmp_versions/
+*.cmd
+*.d
+*.a
+
+# Dependency files
+*.d
+
+# Generated version files
+*.mod.o
+*.mod.cmd
+
+# Backup files
+*~
+*.bak
+*.swp
+*.swo
+
 
 
 ################################################################################
@@ -197,3 +230,4 @@ injector
 *.raw
 
 vmlinuz
+

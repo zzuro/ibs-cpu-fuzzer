@@ -199,7 +199,7 @@ static void noinline write_ibs_ctrl(u64 instruction_offset) {
                         opData3.IbsDcWcMemAcc ? "+" : "-", opData3.IbsDcUcMemAcc ? "+" : "-", opData3.IbsDcMiss ? "+" : "-", opData1.IbsTagToRetCtr, opData1.IbsCompToRetCtr, opData1.IbsOpMicrocode ? "yes" : "no", opData1.IbsOpFuse ? "yes" : "no");
 */
 
-static void __maybe_unused noinline read_ibs_ctrl(u64 uop_cnt) {
+static void __maybe_unused noinline read_ibs_ctrl(u64 uop_cnt, u64 rip_out) {
     ibs_opt_ctrl ibs_op_ctl_data;
     ibs_op_ctl_data.value = __read_msr(IBS_OP_CTL);
 
@@ -211,6 +211,10 @@ static void __maybe_unused noinline read_ibs_ctrl(u64 uop_cnt) {
 
     u64 rip_value;
     rip_value = __read_msr(IBS_OP_RIP);
+    if(rip_out != rip_value)
+    {
+        return;
+    }
     // pr_info("IBS_OP_RIP: %llx\n", rip_value);
 
     // pr_info("Opcode: %llx\n", *(u64 *)rip_value);
@@ -337,6 +341,7 @@ static void dummy_callback_function(void) {
     // This function is called to trigger the VMSAVE instruction.
 }
 
+//src: https://binarydebt.wordpress.com/2018/11/16/try-catch-in-linux-kernel/
 static void fault_handler(void)
 {
     unsigned long bad = 0xdead000000000000UL; /* intentionally bogus */
@@ -364,6 +369,61 @@ static void fault_handler(void)
         pr_info("read val=%lx, exception_vector=%d\n", val, vec);
 }
 
+static __always_inline int try_vmrun(u64 vmcb_pa, int *vec, u64 *rip_out)
+{
+        int rc;
+
+        asm volatile(
+        "movl $0, %[rc]\n\t"
+        "movl $-1, %[vec]\n\t"
+
+        "movq %[pa], %%rax\n\t"
+
+        /* RIP of the vmrun instruction (address of label 1) */
+        "leaq 1f(%%rip), %[rip]\n\t"
+
+        "1: vmrun\n\t"
+        "2:\n\t"
+
+        ".section .fixup,\"ax\"\n\t"
+        "3:\n\t"
+        "movl %%eax, %[vec]\n\t"
+        "movl $-1, %[rc]\n\t"
+        "jmp 2b\n\t"
+        ".previous\n\t"
+
+        _ASM_EXTABLE_FAULT(1b, 3b)
+        : [rc] "=&r"(rc),
+          [vec] "=&r"(*vec),
+          [rip] "=&r"(*rip_out)
+        : [pa] "r"(vmcb_pa)
+        : "rax", "cc", "memory"
+    );
+
+
+        return rc;
+}
+
+static void test_vmrun(u64 vmcb_pa, u64* rip_out)
+{
+        int vec, rc;
+        rc = try_vmrun(vmcb_pa, &vec, rip_out);
+
+        if (!rc) {
+                pr_info("VMRUN executed successfully\n");
+                return;
+        }
+
+        //pr_info("vmrun RIP = 0x%lx rc=%d vec=%d\n", rip, rc, vec);
+
+        // if (vec == X86_TRAP_UD)
+        //         pr_info(" (#UD: invalid opcode / SVM unavailable?)\n");
+        // else if (vec == X86_TRAP_GP)
+        //         pr_info(" (#GP: general protection)\n");
+        // else
+        //         pr_info(" (other exception)\n");
+}
+
 
 static void noinline ibs_analysis(u64 location, u8 *ptr){
     // function_address = (u64) ibs_analysis;
@@ -382,12 +442,14 @@ static void noinline ibs_analysis(u64 location, u8 *ptr){
    // void (*func_ptr)(void) = dummy_callback_function;
 
     write_ibs_ctrl(location);
-    READ_ONCE(ptr[1]);
-    READ_ONCE(ptr[2]);
-    READ_ONCE(ptr[3]);
-    READ_ONCE(ptr[4]);
-    READ_ONCE(ptr[5]);
-    READ_ONCE(ptr[6]);
+    u64 rip;
+    test_vmrun(0x03ffd00000000, &rip);
+    // READ_ONCE(ptr[1]);
+    // READ_ONCE(ptr[2]);
+    // READ_ONCE(ptr[3]);
+    // READ_ONCE(ptr[4]);
+    // READ_ONCE(ptr[5]);
+    // READ_ONCE(ptr[6]);
     // rmpupdate_firmware(0x0000);
     //__read_msr(0xC0010117);
     //__write_cr3_ibs(cr3val);
@@ -423,13 +485,13 @@ recovery_label:
     // Read the value from the PCI_CONFIG_DATA (0xCFC) port
     u64 value = inl(0xcfc);
     // inline code here, we have markers in the beginning and end to help identify failures
-    WRITE_ONCE(ptr[1], 0xAB);
-    WRITE_ONCE(ptr[2], 0xAB);
-    WRITE_ONCE(ptr[3], 0xAB);
-    WRITE_ONCE(ptr[4], 0xAB);
-    WRITE_ONCE(ptr[5], 0xAB);
-    WRITE_ONCE(ptr[6], 0xAB);
-    read_ibs_ctrl(location);
+    // WRITE_ONCE(ptr[1], 0xAB);
+    // WRITE_ONCE(ptr[2], 0xAB);
+    // WRITE_ONCE(ptr[3], 0xAB);
+    // WRITE_ONCE(ptr[4], 0xAB);
+    // WRITE_ONCE(ptr[5], 0xAB);
+    // WRITE_ONCE(ptr[6], 0xAB);
+    read_ibs_ctrl(location, rip);
 
     flush_pipeline();
     //__write_cr3_ibs(cr3val);
@@ -467,8 +529,7 @@ static int __init vmsave_module_init(void) {
                     return -1;
             } */
 
-    fault_handler();
-    //smp_call_function_single(CPU_NUMBER_IBS_USE, ibs_routine, NULL, 1);
+    smp_call_function_single(CPU_NUMBER_IBS_USE, ibs_routine, NULL, 1);
 
     // cleanup_nmi();
     return -1;
