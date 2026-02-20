@@ -60,7 +60,7 @@ bool move_next_instruction(void)
 
         inj.last_len=result.length;
         inj.i.bytes[inj.index]++; //increment the byte at the end of the instruction
-
+        
 
         //if inj.i.bytes[inj.index] == 0, it means we have overflowed the current byte and need to increment the next byte (tunnel up)
         while (inj.index >= 0 && inj.i.bytes[inj.index] == 0)
@@ -111,6 +111,14 @@ void inject(int fd)
     }
 }
 
+void print_result(void)
+{
+    printf("Result: valid=%u length=%u signal=%s si_code=%u addr=0x%08x\n",
+           result.valid, result.length, strsignal(result.signum), result.si_code, result.addr);
+}
+
+
+
 int main()
 {
     int fd;
@@ -133,6 +141,7 @@ int main()
 
     while(move_next_instruction()) {
         inject(fd);
+        print_result();
     }
 
     close(fd);

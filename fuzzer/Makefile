@@ -13,7 +13,7 @@ OBJS := $(SRCS:.c=.o)
 GUEST_OBJS := $(GUEST_SRCS:.c=.o)
 
 # Compiler flags
-CFLAGS := -Wall -Wextra -Wpedantic -O2 -g -std=gnu11
+CFLAGS := -Wall -Wextra -Wpedantic -O2 -g -std=gnu11 
 
 # Linker flags
 LDFLAGS := -pthread

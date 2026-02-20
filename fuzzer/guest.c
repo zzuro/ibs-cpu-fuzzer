@@ -60,11 +60,8 @@ state_t inject_state = {
     .rsp = 0,
 };
 
-struct {
-	uint64_t dummy_stack_hi[256];
-	uint64_t dummy_stack_lo[256];
-} dummy_stack __attribute__ ((aligned(PAGE_SIZE)));
 
+static uint64_t dummy_stack[512] __attribute__ ((aligned(PAGE_SIZE)));
 
 //holds a snapshot of the CPU state at the time of a fault, used for recovery after the fault
 mcontext_t fault_context;
@@ -102,7 +99,7 @@ void fault_handler(int signum, siginfo_t* si, void* p)
 
 	memcpy(uc->uc_mcontext.gregs, fault_context.gregs, sizeof(fault_context.gregs));
 	uc->uc_mcontext.gregs[IP]=(uintptr_t)&resume;
-	uc->uc_mcontext.gregs[REG_EFL]&=~TF; //
+	uc->uc_mcontext.gregs[REG_EFL]&=~TF; 
 }
 
 
@@ -142,10 +139,8 @@ void preamble(void)
 
 int inject(int insn_size)
 {
-
     int i;
     int preamble_length = (&preamble_end - &preamble_start);
-    static bool have_state = false;
     packet = (uint8_t *)packet_buffer + PAGE_SIZE - insn_size - preamble_length;
 
     for (i = 0; i < preamble_length; i++)
@@ -161,13 +156,9 @@ int inject(int insn_size)
     void* p=NULL;
     memset(p, 0, PAGE_SIZE);
 
-
-    if(!have_state)
-    {
-       have_state=true;
-       configure_sig_handler(state_handler);
-		__asm__ __volatile__ ("ud2\n");
-    }
+    inject_state.rsp=(uint64_t)(uintptr_t)dummy_stack+sizeof(dummy_stack);
+    configure_sig_handler(state_handler);
+	__asm__ __volatile__ ("ud2\n");
 
     configure_sig_handler(fault_handler);
 
@@ -208,7 +199,7 @@ int inject(int insn_size)
                            [r14] "m"(inject_state.r14),
                            [r15] "m"(inject_state.r15),
                            [rbp] "m"(inject_state.rbp),
-                           [rsp] "r"(&dummy_stack.dummy_stack_lo[256]),
+                           [rsp]"m"(inject_state.rsp),
                            [packet] "m"(packet));
 }
 
@@ -288,7 +279,11 @@ int main()
             fprintf(stderr, "Error during poll\n");
             break;
         }
-
+        printf("Received instruction: ");
+        for (i = 0; i < MAX_INSN_LENGTH; i++)        {
+            printf("%02x ", (unsigned char)instr[i]);
+        }
+        printf("\n");
         for (i = 1; i <= MAX_INSN_LENGTH; i++)
         {
             inject(i);
