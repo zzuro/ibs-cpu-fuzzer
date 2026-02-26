@@ -1,0 +1,172 @@
+#include "ktypes.h"
+#include "interrupt_handlers.h"
+#include "serial.h"
+
+struct __attribute__((packed)) interrupt_frame {
+    u64 ip;
+    u64 cs;
+    u64 flags;
+    u64 sp;
+};
+typedef struct interrupt_frame interrupt_frame_t;
+
+/** Vector #0 */
+__attribute__((interrupt)) void int_handler__division_error(void* iframe){
+    (void)iframe;
+    serial_puts("#DE\n");
+    return;
+}
+
+/** Vector #1 */
+__attribute__((interrupt)) void int_handler__debug(void* iframe){
+    (void)iframe;
+    serial_puts("#DB\n");
+    return;
+}
+
+/* missing: NMI, Breakpoint, Overflow */
+
+/** Vector #5 */
+__attribute__((interrupt)) void int_handler__bound_range_exceeded(void* iframe){
+    (void)iframe;
+    serial_puts("#BR\n");
+    return;
+}
+
+/** Vector #6 */
+__attribute__((interrupt)) void int_handler__invalid_opcode(void* iframe){
+    (void)iframe;
+    serial_puts("#UD\n");
+    return;
+}
+
+/** Vector #7 */
+__attribute__((interrupt)) void int_handler__device_not_available(void* iframe){
+    (void)iframe;
+    serial_puts("#NM\n");
+    return;
+}
+
+/** Vector #8 */
+__attribute__((interrupt)) void int_handler__double_fault(void* iframe){
+    (void)iframe;
+    serial_puts("#DF\n");
+    return;
+}
+
+/** Vector #10 */
+__attribute__((interrupt)) void int_handler__invalid_tss(void* iframe){
+    (void)iframe;
+    serial_puts("#TS\n");
+    return;
+}
+
+/** Vector #11 */
+__attribute__((interrupt)) void int_handler__segment_not_present(void* iframe){
+    (void)iframe;
+    serial_puts("#NP\n");
+    return;
+}
+
+/** Vector #12 */
+__attribute__((interrupt)) void int_handler__stack_segment_fault(void* iframe){
+    (void)iframe;
+    serial_puts("#SS\n");
+    return;
+}
+
+/** Vector #13 */
+__attribute__((interrupt)) void int_handler__general_protection_fault(void* iframe){
+    (void)iframe;
+    serial_puts("#GP\n");
+    serial_putchar(033);
+    serial_puts("[31m");
+    serial_puts("Hanging after #GP...\n");
+    serial_putchar(033);
+    serial_puts("[39m");
+    while(1){}
+    return;
+}
+
+/** Vector #14 */
+__attribute__((interrupt)) void int_handler__page_fault(void* iframe){
+    (void)iframe;
+    serial_puts("#PF\n");
+    return;
+}
+
+/** Vector #15 is reserved */
+
+/** Vector #16 */
+__attribute__((interrupt)) void int_handler__x87_floating_point_exception(void* iframe){
+    (void)iframe;
+    serial_puts("#MF\n");
+    return;
+}
+
+/** Vector #17 */
+__attribute__((interrupt)) void int_handler__x87_alignement_check(void* iframe){
+    (void)iframe;
+    serial_puts("#AC\n");
+    return;
+}
+
+/** Vector #18 */
+__attribute__((interrupt)) void int_handler__machine_check(void* iframe){
+    (void)iframe;
+    serial_puts("#MC\n");
+    return;
+}
+
+/** Vector #19 */
+__attribute__((interrupt)) void int_handler__simd_floating_point_exception(void* iframe){
+    (void)iframe;
+    serial_puts("#XF\n");
+    return;
+}
+
+/** Vector #20 */
+__attribute__((interrupt)) void int_handler__virtualization_exception(void* iframe){
+    (void)iframe;
+    serial_puts("#VE\n");
+    return;
+}
+
+/** Vector #21 */
+__attribute__((interrupt)) void int_handler__control_protection_exception(void* iframe){
+    (void)iframe;
+    serial_puts("#CP\n");
+    return;
+}
+
+/** Vectors 22 to 27 (inclusive) are reserved */
+
+/** Vector #28 */
+__attribute__((interrupt)) void int_handler__hypervisor_injection_exception(void* iframe){
+    (void)iframe;
+    serial_puts("#HV\n");
+    return;
+}
+
+/** Vector #29 */
+__attribute__((interrupt)) void int_handler__vmm_communication(void* iframe){
+    // interrupt_frame_t* iframe_actual = (interrupt_frame_t*)iframe;
+    // (void)iframe_actual;
+    (void)iframe;
+    serial_puts("#VC\n");
+    return;
+}
+
+/** Vector #30 */
+__attribute__((interrupt)) void int_handler__security_exception(void* iframe){
+    (void)iframe;
+    serial_puts("#SX\n");
+    return;
+}
+
+
+
+__attribute__((interrupt)) void int_handler__nop(void* iframe){
+    (void)iframe;
+    return;
+}

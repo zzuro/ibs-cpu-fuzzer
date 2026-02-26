@@ -1,0 +1,17 @@
+#pragma GCC push_options
+#define  _MM_MALLOC_H_INCLUDED
+#include <immintrin.h>
+#undef _MM_MALLOC_H_INCLUDED
+#pragma GCC pop_options
+
+#include "vectorops.h"
+
+u32 test_avx(void){
+    // See https://veron.univ-tln.fr/AVX/exemple.html
+    __m128i V1, V2, S;
+    V1 = _mm_set_epi32(3,2,1,0);
+    V2 = _mm_set_epi32(40,30,20,10);
+    S = _mm_add_epi32(V1,V2);
+
+    return S[0];
+}

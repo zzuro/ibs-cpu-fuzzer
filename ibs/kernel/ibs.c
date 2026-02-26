@@ -233,9 +233,9 @@ static void __maybe_unused noinline read_ibs_ctrl(u64 uop_cnt, u64 rip_out) {
     //if ((phys_addr & 0xfd00000000) == 0xfd00000000) {
     if (1) {
         if (opData3.ld_op == 1 || opData3.st_op == 1) {
-            pr_info("[RIP: 0x%016llx][uop cnt: %lld] [%6s%s] 0x%016llx (v=0x%016llx) UC[%s] WC[%s] CacheMiss [%s] tagToRetire [%4d] compToRetire [%4d] \n",rip_value ,uop_cnt, opData3.ld_op ? "load" : "store", memwithStrings[opData3.op_mem_width], phys_addr, lin_addr,  opData3.dc_wc_mem_acc ? "+" : "-", opData3.dc_uc_mem_acc ? "+" : "-", opData3.dc_miss ? "+" : "-",opData1.comp_to_ret_ctr, opData1.tag_to_ret_ctr);
+            pr_info("[RIP: 0x%016llx][uop cnt: %lld] [%6s%s] 0x%016llx (v=0x%016llx) UC[%s] WC[%s] CacheMiss [%s] tagToRetire [%4d] compToRetire [%4d] \n",rip_value ,uop_cnt, opData3.ld_op ? "load" : "store", memwithStrings[opData3.op_mem_width], phys_addr, lin_addr,  opData3.dc_wc_mem_acc ? "+" : "-", opData3.dc_uc_mem_acc ? "+" : "-", opData3.dc_miss ? "+" : "-",opData1.tag_to_ret_ctr, opData1.comp_to_ret_ctr);
 		} else {
-            pr_info("[RIP: 0x%016llx][uop cnt: %lld] [%8s] Branch[%3s] tagToRetire [%4d] compToRetire [%4d] micro [%3s] multiOP [%3s]\n",rip_value, uop_cnt, "ALU", opData1.op_brn_ret ? "yes" : "no" , opData1.comp_to_ret_ctr, opData1.tag_to_ret_ctr, opData1.op_microcode ? "yes" : "no", opData1.op_brn_fuse ? "yes" : "no" );
+            pr_info("[RIP: 0x%016llx][uop cnt: %lld] [%8s] Branch[%3s] tagToRetire [%4d] compToRetire [%4d] micro [%3s] multiOP [%3s]\n",rip_value, uop_cnt, "ALU", opData1.op_brn_ret ? "yes" : "no" , opData1.tag_to_ret_ctr, opData1.comp_to_ret_ctr, opData1.op_microcode ? "yes" : "no", opData1.op_brn_fuse ? "yes" : "no" );
         }
     }
 
@@ -382,7 +382,7 @@ static __always_inline int try_vmrun(u64 vmcb_pa, int *vec, u64 *rip_out)
         /* RIP of the vmrun instruction (address of label 1) */
         "leaq 1f(%%rip), %[rip]\n\t"
 
-        "1: vmrun\n\t"
+        "1: cpuid\n\t"
         "2:\n\t"
 
         ".section .fixup,\"ax\"\n\t"
@@ -518,7 +518,7 @@ static void ibs_routine(void *data) {
         return;
     }
     //map_physical_to_virtual(0x400000000000,0xfffffffffffE0000);
-    for (int j = 17; j < 95; j++) {
+    for (int j = 17; j < 130; j++) {
         ibs_analysis(j, ptr);
     }
 }

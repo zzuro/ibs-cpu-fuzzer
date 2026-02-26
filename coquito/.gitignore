@@ -1,0 +1,234 @@
+################################################################################
+# OS / Misc
+################################################################################
+.DS_Store
+.DS_Store?
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+*~
+*.swp
+*.swo
+*.tmp
+*.bak
+*.old
+*.orig
+*.rej
+
+################################################################################
+# VS Code
+################################################################################
+# Ignore everything in .vscode by default
+.vscode/*
+.vscode
+# But allow shared workspace settings (optional — good for teams)
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# VS Code testing / cache
+.vscode-test/
+
+################################################################################
+# C / C++: Compiled objects, libs, executables
+################################################################################
+*.o
+*.obj
+*.lo
+*.slo
+*.d
+*.a
+*.lib
+*.so
+*.so.*
+*.dylib
+*.dll
+*.exe
+*.out
+*.app
+
+# Debug symbols
+*.pdb
+*.dSYM/
+*.su
+*.idb
+
+# Precompiled headers
+*.gch
+*.pch
+
+################################################################################
+# Make
+################################################################################
+Makefile.in
+*.ninja
+*.ninja_deps
+*.ninja_log
+
+################################################################################
+# CMake
+################################################################################
+# Build directories
+build/
+build-*/
+cmake-build-*/
+out/
+bin/
+lib/
+dist/
+
+# CMake generated files
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+install_manifest.txt
+CTestTestfile.cmake
+Testing/
+compile_commands.json
+
+################################################################################
+# Autotools / Configure (optional)
+################################################################################
+configure
+config.status
+config.log
+config.cache
+autom4te.cache/
+aclocal.m4
+m4/
+ltmain.sh
+libtool
+stamp-h1
+.deps/
+.libs/
+
+################################################################################
+# Coverage / Profiling
+################################################################################
+*.gcno
+*.gcda
+*.gcov
+*.lcov
+coverage/
+coverage-report/
+*.profraw
+*.profdata
+
+################################################################################
+# Logs / Core dumps
+################################################################################
+*.log
+core
+core.*
+
+################################################################################
+# Python
+################################################################################
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+.conda/
+
+# Packaging / build
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+wheelhouse/
+
+# Tool caches
+.pytest_cache/
+.mypy_cache/
+.pyre/
+.pytype/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.nox/
+.tox/
+
+# Jupyter
+.ipynb_checkpoints/
+
+################################################################################
+# Native Python extensions
+################################################################################
+*.pyd
+
+################################################################################
+# Documentation builds
+################################################################################
+docs/_build/
+site/
+
+################################################################################
+# Local config / secrets
+################################################################################
+.env
+.env.*
+!.env.example
+secrets.*
+*.key
+*.pem
+
+# =========================
+# Linux Kernel Module Build
+# =========================
+
+# Object files
+*.o
+*.ko
+*.mod
+*.mod.c
+*.symvers
+*.order
+
+# Kernel build system files
+Module.symvers
+modules.order
+.tmp_versions/
+*.cmd
+*.d
+*.a
+
+# Dependency files
+*.d
+
+# Generated version files
+*.mod.o
+*.mod.cmd
+
+# Backup files
+*~
+*.bak
+*.swp
+*.swo
+
+
+
+################################################################################
+# Executables and scripts
+################################################################################
+sampling
+ibs_workload_cache
+ibs_workload_store
+guest
+injector
+
+*.img
+*.iso
+*.raw
+
+vmlinuz
+
+*.elf
