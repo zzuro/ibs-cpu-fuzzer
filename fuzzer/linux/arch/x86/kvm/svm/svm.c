@@ -46,12 +46,17 @@
 #include <asm/fpu/api.h>
 #include <asm/amd/ibs.h>
 
+#include <linux/debugfs.h>
+#include <linux/seq_file.h>
+
 #include <trace/events/ipi.h>
 
 #include "trace.h"
 
 #include "svm.h"
 #include "svm_ops.h"
+
+#include "fuzzer.h"
 
 #include "kvm_onhyperv.h"
 #include "svm_onhyperv.h"
@@ -1926,34 +1931,155 @@ static void svm_set_dr7(struct kvm_vcpu *vcpu, unsigned long value)
 }
 
 
-#define UD2_SIZE  2
-#define MAGIC_VALUE 0x1234DEADBEEF1234ULL
 
-struct vmcb_save_area saved_state;
-static u64* fuzz_mem1;
-static u64* fuzz_mem2;
+static fuzzer_state_t fuzz_state = {
+	.fuzz_mem1_host = NULL,
+	.fuzz_mem1_guest = NULL,
+	.fuzz_mem2_host = NULL,
+	.fuzz_mem2_guest = NULL,
 
+	.total_range = {
+		.start = { .bytes = { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+				      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+				      0x00, 0x00 },
+			   .len = 0 },
+		.end = { .bytes = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+				    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+				    0xff, 0xff },
+			 .len = 0 },
+		.started = false },
+
+	.inj = {0},
+	.current_length = 1,
+	.result = {0},
+
+	.current_op = START,
+
+	.saved_state = {0}
+};
+
+static void write_instr()
+{
+	uint32_t i = 0;
+	uint8_t* start = fuzz_state.fuzz_mem1_host + PAGE_SIZE - fuzz_state.inj.i.len;
+	for(; i < fuzz_state.inj.i.len; i++) {
+		start[i] = fuzz_state.inj.i.bytes[i];
+	}
+
+	for(; i < MAX_INSN_LENGTH; i++) 
+	{
+		fuzz_state.fuzz_mem2_host[i] = fuzz_state.inj.i.bytes[i];
+	}
+}
+
+static void write_result(uint8_t exit_code)
+{
+	result_t* res = &fuzz_state.result;
+	res->length = fuzz_state.inj.i.len;
+	res->ecxeption = exit_code;
+	res->valid = true;
+}
+
+
+static void reset_state(struct kvm_vcpu *vcpu)
+{
+	struct vcpu_svm *svm = to_svm(vcpu);
+
+	svm_copy_vmrun_state(&svm->vmcb->save, &fuzz_state.saved_state);
+	vmcb_mark_all_dirty(svm->vmcb);
+	
+	kvm_set_rflags(vcpu, fuzz_state.saved_state.rflags);
+
+	svm_set_efer(vcpu, fuzz_state.saved_state.efer);
+
+	svm_set_cr0(vcpu, fuzz_state.saved_state.cr0);
+	svm_set_cr4(vcpu, fuzz_state.saved_state.cr4);
+
+	kvm_rip_write(vcpu, fuzz_state.saved_state.rip + UD2_SIZE);
+	kvm_rsp_write(vcpu, fuzz_state.saved_state.rsp);
+	kvm_rax_write(vcpu, fuzz_state.saved_state.rax);
+}
+
+static void move_next_instruction(void)
+{
+    if (fuzz_state.result.length != fuzz_state.inj.last_len && fuzz_state.inj.index < fuzz_state.result.length - 1) {
+		fuzz_state.inj.index++; 
+	}
+
+    fuzz_state.inj.last_len = fuzz_state.result.length;
+    fuzz_state.inj.i.bytes[fuzz_state.inj.index]++; 
+
+    while (fuzz_state.inj.index >= 0 && fuzz_state.inj.i.bytes[fuzz_state.inj.index] == 0)
+    {
+        fuzz_state.inj.index--;
+        if (fuzz_state.inj.index >= 0)
+        {
+            fuzz_state.inj.i.bytes[fuzz_state.inj.index]++;
+        }
+        fuzz_state.inj.last_len = -1;
+    }
+}
+
+static void init_inj()
+{
+	fuzz_state.inj.i = fuzz_state.total_range.start;
+	fuzz_state.inj.i.len = 1;
+	fuzz_state.inj.last_len = -1;
+	fuzz_state.inj.index = 0;
+}
+
+static void setup_fuzzer(struct kvm_vcpu *vcpu)
+{
+	svm_copy_vmrun_state(&fuzz_state.saved_state, &to_svm(vcpu)->vmcb->save);
+	
+	uint64_t gpa = kvm_rax_read(vcpu);
+	struct kvm_host_map map;
+
+	//executable page 
+	if (kvm_vcpu_map(vcpu, gpa >> PAGE_SHIFT, &map)) {
+		pr_err("[Fuzzer] Failed to map guest memory\n");
+		return 1;
+	}
+	fuzz_state.fuzz_mem1_host = (uint64_t *)map.hva;
+	fuzz_state.fuzz_mem1_guest = gpa;
+
+	//non-executable page
+	if (kvm_vcpu_map(vcpu, (gpa >> PAGE_SHIFT) + 1, &map)) {
+		pr_err("[Fuzzer] Failed to map guest memory\n");
+		return 1;
+	}
+
+	fuzz_state.fuzz_mem2_host = (uint64_t *)map.hva;
+	fuzz_state.fuzz_mem2_guest = gpa + PAGE_SIZE;
+	
+	uint64_t rip = kvm_rip_read(vcpu);
+	kvm_rip_write(vcpu, rip + UD2_SIZE);
+
+	//incase VM crashed we don't want to continue with the latest instruction
+	if(!fuzz_state.total_range.started) {
+		init_inj();
+		fuzz_state.total_range.started = true;
+	}
+
+	fuzz_state.current_op = INSTRUCTION;
+	fuzz_state.fetch_counter = 0;
+}
 
 static int pf_interception(struct kvm_vcpu *vcpu)
 {
-	pr_info("[Fuzzer] Page fault intercepted, restoring saved_state\n");
 	struct vcpu_svm *svm = to_svm(vcpu);
-
-	(*fuzz_mem1)++;
-	svm_copy_vmrun_state(&svm->vmcb->save, &saved_state);
-	vmcb_mark_all_dirty(svm->vmcb);
-	
-	kvm_set_rflags(vcpu, saved_state.rflags);
-
-	svm_set_efer(vcpu, saved_state.efer);
-
-	svm_set_cr0(vcpu, saved_state.cr0);
-	svm_set_cr4(vcpu, saved_state.cr4);
-
-	kvm_rip_write(vcpu, saved_state.rip + UD2_SIZE);
-	kvm_rsp_write(vcpu, saved_state.rsp);
-	kvm_rax_write(vcpu, saved_state.rax);
-
+	if(svm->vmcb->save.cr2 == fuzz_state.fuzz_mem2_guest) {
+		fuzz_state.inj.i.len++;
+		if(fuzz_state.inj.i.len <= MAX_INSN_LENGTH) {
+			write_instr();
+			reset_state(vcpu);
+			return 1;
+		}else{
+			//TODO: MAX reached, search for next instruction to fuzz
+		}
+	}else{
+		//TODO: handle unexpected page fault, maybe reset fuzzing state and start over
+	}
 	return 1;
 }
 
@@ -1991,32 +2117,10 @@ static int npf_interception(struct kvm_vcpu *vcpu)
 
 static int db_interception(struct kvm_vcpu *vcpu)
 {
-	struct kvm_run *kvm_run = vcpu->run;
-	struct vcpu_svm *svm = to_svm(vcpu);
-
-	if (!(vcpu->guest_debug &
-	      (KVM_GUESTDBG_SINGLESTEP | KVM_GUESTDBG_USE_HW_BP)) &&
-		!svm->nmi_singlestep) {
-		u32 payload = svm->vmcb->save.dr6 ^ DR6_ACTIVE_LOW;
-		kvm_queue_exception_p(vcpu, DB_VECTOR, payload);
-		return 1;
-	}
-
-	if (svm->nmi_singlestep) {
-		disable_nmi_singlestep(svm);
-		/* Make sure we check for pending NMIs upon entry */
-		kvm_make_request(KVM_REQ_EVENT, vcpu);
-	}
-
-	if (vcpu->guest_debug &
-	    (KVM_GUESTDBG_SINGLESTEP | KVM_GUESTDBG_USE_HW_BP)) {
-		kvm_run->exit_reason = KVM_EXIT_DEBUG;
-		kvm_run->debug.arch.dr6 = svm->vmcb->save.dr6;
-		kvm_run->debug.arch.dr7 = svm->vmcb->save.dr7;
-		kvm_run->debug.arch.pc =
-			svm->vmcb->save.cs.base + svm->vmcb->save.rip;
-		kvm_run->debug.arch.exception = DB_VECTOR;
-		return 0;
+	if(fuzz_state.current_op == INSTRUCTION) {
+		
+		fuzz_state.current_op = MICROOP;
+		fuzz_state.fetch_counter++;
 	}
 
 	return 1;
@@ -2036,37 +2140,16 @@ static int bp_interception(struct kvm_vcpu *vcpu)
 
 static int ud_interception(struct kvm_vcpu *vcpu)
 {
-	
-	
 	u64 rid = kvm_rip_read(vcpu);
 	if (rid == MAGIC_VALUE) {
-		pr_info("[Fuzzer] Magic value hit, triggering state capture\n");
-		svm_copy_vmrun_state(&saved_state, &to_svm(vcpu)->vmcb->save);
-	
-		u64 gpa = kvm_rax_read(vcpu);
-
-		struct kvm_host_map map;
-
-		//executable page 
-		if (kvm_vcpu_map(vcpu, gpa >> PAGE_SHIFT, &map)) {
-			pr_err("[Fuzzer] Failed to map guest memory\n");
-			return 1;
-		}
-		fuzz_mem1 = (u64 *)map.hva;
-
-		//non-executable page
-		if (kvm_vcpu_map(vcpu, (gpa >> PAGE_SHIFT) + 1, &map)) {
-			pr_err("[Fuzzer] Failed to map guest memory\n");
-			return 1;
-		}
-
-		fuzz_mem2 = (u64 *)map.hva;
-	
-
-		u64 rip = kvm_rip_read(vcpu);
-		kvm_rip_write(vcpu, rip + UD2_SIZE);
-
-		return 1;
+		setup_fuzzer(vcpu);
+		write_instr();
+	}else
+	{
+		write_result(UD_VECTOR);
+		move_next_instruction();
+		write_instr();
+		reset_state(vcpu);
 	}
 
 	return 1;
@@ -4323,6 +4406,8 @@ static void __maybe_unused write_ibs_ctrl(u64 instruction_offset)
 	__write_msr(IBS_OP_CTL, ibs_op_ctl_data.val);
 }
 
+
+
 static void __maybe_unused read_ibs_ctrl(u64 uop_cnt)
 {
 	union ibs_op_ctl ibs_op_ctl_data;
@@ -4343,7 +4428,7 @@ static void __maybe_unused read_ibs_ctrl(u64 uop_cnt)
 	//u64 branch_target_rip = __read_msr(BP_IBSTGT_RIP);
 
 	//if ((phys_addr & 0xfd00000000) == 0xfd00000000) {
-	if (1) {
+	if (fuzz_state.current_op == MICROOP) {
 		if (opData3.ld_op == 1 || opData3.st_op == 1) {
 			pr_info("[RIP: 0x%016llx][uop cnt: %lld] [%6s%s] 0x%016llx (v=0x%016llx) UC[%s] WC[%s] CacheMiss [%s] tagToRetire [%4d] compToRetire [%4d] \n",
 				rip_value, uop_cnt,
@@ -4355,12 +4440,12 @@ static void __maybe_unused read_ibs_ctrl(u64 uop_cnt)
 				opData1.tag_to_ret_ctr,
 				opData1.comp_to_ret_ctr);
 		} else {
-			// pr_info("[RIP: 0x%016llx][uop cnt: %lld] [%8s] Branch[%3s] tagToRetire [%4d] compToRetire [%4d] micro [%3s] multiOP [%3s]\n",
-			// 	rip_value, uop_cnt, "ALU",
-			// 	opData1.op_brn_ret ? "yes" : "no",
-			// 	opData1.tag_to_ret_ctr, opData1.comp_to_ret_ctr,
-			// 	opData1.op_microcode ? "yes" : "no",
-			// 	opData1.op_brn_fuse ? "yes" : "no");
+			pr_info("[RIP: 0x%016llx][uop cnt: %lld] [%8s] Branch[%3s] tagToRetire [%4d] compToRetire [%4d] micro [%3s] multiOP [%3s]\n",
+				rip_value, uop_cnt, "ALU",
+				opData1.op_brn_ret ? "yes" : "no",
+				opData1.tag_to_ret_ctr, opData1.comp_to_ret_ctr,
+				opData1.op_microcode ? "yes" : "no",
+				opData1.op_brn_fuse ? "yes" : "no");
 		}
 	}
 

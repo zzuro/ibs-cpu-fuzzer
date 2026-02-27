@@ -22,14 +22,6 @@ Desktop.ini
 # Ignore everything in .vscode by default
 .vscode/*
 .vscode
-# But allow shared workspace settings (optional — good for teams)
-!.vscode/settings.json
-!.vscode/tasks.json
-!.vscode/launch.json
-!.vscode/extensions.json
-
-# VS Code testing / cache
-.vscode-test/
 
 ################################################################################
 # C / C++: Compiled objects, libs, executables
@@ -228,6 +220,10 @@ injector
 *.img
 *.iso
 *.raw
+*.elf
+*.fd
+
+vector.bin
 
 vmlinuz
 

@@ -9,3 +9,5 @@ make bindeb-pkg -j$(nproc) LOCALVERSION=-ibs
 cd ..
 
 sudo dpkg -i *.deb
+
+sudo update-grub

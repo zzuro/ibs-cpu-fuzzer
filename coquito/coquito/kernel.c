@@ -230,7 +230,7 @@ void __attribute__((noreturn)) kernel_main(void)
     pte_301->xd = 1; // Mark the page as non-executable
 
     // capture VM state here
-    __asm__ __volatile__(
+    asm volatile(
         "mov %0, %%rax\n\t"
         "mov %1, %%rdi\n\t"
         "ud2\n\t"
@@ -239,6 +239,7 @@ void __attribute__((noreturn)) kernel_main(void)
         : "rax", "rdi");
 
     
+   
     serial_puts("Idling...\n");
     while (true)
     {
