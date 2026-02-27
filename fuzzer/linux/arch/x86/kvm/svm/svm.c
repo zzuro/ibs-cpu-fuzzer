@@ -57,6 +57,7 @@
 #include "svm_ops.h"
 
 #include "fuzzer.h"
+#include "ibs_logger.h"
 
 #include "kvm_onhyperv.h"
 #include "svm_onhyperv.h"
@@ -1931,34 +1932,55 @@ static void svm_set_dr7(struct kvm_vcpu *vcpu, unsigned long value)
 }
 
 
-
+#define MAX_INSTRUCTION_COUNT 6000
 static fuzzer_state_t fuzz_state = {
-	.fuzz_mem1_host = NULL,
+	.fuzz_mem1_host  = NULL,
 	.fuzz_mem1_guest = NULL,
-	.fuzz_mem2_host = NULL,
+	.fuzz_mem2_host  = NULL,
 	.fuzz_mem2_guest = NULL,
 
 	.total_range = {
-		.start = { .bytes = { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-				      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-				      0x00, 0x00 },
-			   .len = 0 },
-		.end = { .bytes = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-				    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-				    0xff, 0xff },
-			 .len = 0 },
-		.started = false },
+		.start = {
+			.bytes = { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+				   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+				   0x00 },
+			.len = 0,
+		},
+		.end = {
+			.bytes = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+				   0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+				   0xff },
+			.len = 0,
+		},
+		.started = false,
+	},
 
-	.inj = {0},
+	.inj = {
+		.i = {
+			.bytes = {0},
+			.len = 0,
+		},
+		.index = 0,
+		.last_len = 0,
+	},
+
 	.current_length = 1,
-	.result = {0},
+
+	.result = {
+		.valid = 0,
+		.length = 0,
+		.ecxeption = 0,
+	},
 
 	.current_op = START,
+	.fetch_counter = 0,
 
-	.saved_state = {0}
+	.saved_state = {},
+
+	.file_open = false,
 };
 
-static void write_instr()
+static void write_instr(void)
 {
 	uint32_t i = 0;
 	uint8_t* start = fuzz_state.fuzz_mem1_host + PAGE_SIZE - fuzz_state.inj.i.len;
@@ -2020,7 +2042,7 @@ static void move_next_instruction(void)
     }
 }
 
-static void init_inj()
+static void init_inj(void)
 {
 	fuzz_state.inj.i = fuzz_state.total_range.start;
 	fuzz_state.inj.i.len = 1;
@@ -2038,19 +2060,19 @@ static void setup_fuzzer(struct kvm_vcpu *vcpu)
 	//executable page 
 	if (kvm_vcpu_map(vcpu, gpa >> PAGE_SHIFT, &map)) {
 		pr_err("[Fuzzer] Failed to map guest memory\n");
-		return 1;
+		return;
 	}
-	fuzz_state.fuzz_mem1_host = (uint64_t *)map.hva;
-	fuzz_state.fuzz_mem1_guest = gpa;
+	fuzz_state.fuzz_mem1_host = (uint8_t *)map.hva;
+	fuzz_state.fuzz_mem1_guest = (uint8_t *)gpa;
 
 	//non-executable page
 	if (kvm_vcpu_map(vcpu, (gpa >> PAGE_SHIFT) + 1, &map)) {
 		pr_err("[Fuzzer] Failed to map guest memory\n");
-		return 1;
+		return;
 	}
 
-	fuzz_state.fuzz_mem2_host = (uint64_t *)map.hva;
-	fuzz_state.fuzz_mem2_guest = gpa + PAGE_SIZE;
+	fuzz_state.fuzz_mem2_host = (uint8_t *)map.hva;
+	fuzz_state.fuzz_mem2_guest = (uint8_t *)gpa + PAGE_SIZE;
 	
 	uint64_t rip = kvm_rip_read(vcpu);
 	kvm_rip_write(vcpu, rip + UD2_SIZE);
@@ -2063,22 +2085,52 @@ static void setup_fuzzer(struct kvm_vcpu *vcpu)
 
 	fuzz_state.current_op = INSTRUCTION;
 	fuzz_state.fetch_counter = 0;
+	fuzz_state.file_open = false;
+}
+
+static void fetch_microop(int exit_code, struct kvm_vcpu *vcpu)
+{
+	if (fuzz_state.current_op == INSTRUCTION) {
+		fuzz_state.current_op = MICROOP;
+		char *path = ibs_generate_filename(fuzz_state.inj.i.bytes,
+						   fuzz_state.inj.i.len);
+		if (!path)
+			pr_err("[Fuzzer] Failed to generate log file path\n");
+
+		int res = ibs_log_open(path);
+		if (res) {
+			pr_err("[Fuzzer] Failed to open log file\n");
+		} else {
+			fuzz_state.file_open = true;
+		}
+	}
+
+	if(fuzz_state.current_op == MICROOP && fuzz_state.fetch_counter < MAX_INSTRUCTION_COUNT) {
+		fuzz_state.fetch_counter++;
+	}else if(fuzz_state.current_op == MICROOP) {
+		fuzz_state.current_op = INSTRUCTION;
+		ibs_log_close();
+		write_result(exit_code);
+		move_next_instruction();
+		write_instr();
+		reset_state(vcpu);
+	}
 }
 
 static int pf_interception(struct kvm_vcpu *vcpu)
 {
 	struct vcpu_svm *svm = to_svm(vcpu);
-	if(svm->vmcb->save.cr2 == fuzz_state.fuzz_mem2_guest) {
+	uint64_t cr2 = svm->vmcb->control.exit_info_2; //contains cr2 value at the time of page fault
+	if(cr2 == (uint64_t)fuzz_state.fuzz_mem2_guest) {
 		fuzz_state.inj.i.len++;
 		if(fuzz_state.inj.i.len <= MAX_INSN_LENGTH) {
 			write_instr();
 			reset_state(vcpu);
-			return 1;
 		}else{
 			//TODO: MAX reached, search for next instruction to fuzz
 		}
 	}else{
-		//TODO: handle unexpected page fault, maybe reset fuzzing state and start over
+		fetch_microop(PF_VECTOR, vcpu); //page fault issued by instruction itself
 	}
 	return 1;
 }
@@ -2117,12 +2169,7 @@ static int npf_interception(struct kvm_vcpu *vcpu)
 
 static int db_interception(struct kvm_vcpu *vcpu)
 {
-	if(fuzz_state.current_op == INSTRUCTION) {
-		
-		fuzz_state.current_op = MICROOP;
-		fuzz_state.fetch_counter++;
-	}
-
+	fetch_microop(DB_VECTOR, vcpu);
 	return 1;
 }
 
@@ -2146,6 +2193,7 @@ static int ud_interception(struct kvm_vcpu *vcpu)
 		write_instr();
 	}else
 	{
+		//instruction was invalid, no need to fetch micro-op
 		write_result(UD_VECTOR);
 		move_next_instruction();
 		write_instr();
@@ -2350,7 +2398,7 @@ enum {
 };
 
 /* Return NONE_SVM_INSTR if not SVM instrs, otherwise return decode result */
-static int svm_instr_opcode(struct kvm_vcpu *vcpu)
+static int __maybe_unused svm_instr_opcode(struct kvm_vcpu *vcpu)
 {
 	struct x86_emulate_ctxt *ctxt = vcpu->arch.emulate_ctxt;
 
@@ -2371,7 +2419,7 @@ static int svm_instr_opcode(struct kvm_vcpu *vcpu)
 	return NONE_SVM_INSTR;
 }
 
-static int emulate_svm_instr(struct kvm_vcpu *vcpu, int opcode)
+static int __maybe_unused emulate_svm_instr(struct kvm_vcpu *vcpu, int opcode)
 {
 	const int guest_mode_exit_codes[] = {
 		[SVM_INSTR_VMRUN] = SVM_EXIT_VMRUN,
@@ -2406,41 +2454,7 @@ static int emulate_svm_instr(struct kvm_vcpu *vcpu, int opcode)
  */
 static int gp_interception(struct kvm_vcpu *vcpu)
 {
-	struct vcpu_svm *svm = to_svm(vcpu);
-	u32 error_code = svm->vmcb->control.exit_info_1;
-	int opcode;
-
-	/* Both #GP cases have zero error_code */
-	if (error_code)
-		goto reinject;
-
-	/* Decode the instruction for usage later */
-	if (x86_decode_emulated_instruction(vcpu, 0, NULL, 0) != EMULATION_OK)
-		goto reinject;
-
-	opcode = svm_instr_opcode(vcpu);
-
-	if (opcode == NONE_SVM_INSTR) {
-		if (!enable_vmware_backdoor)
-			goto reinject;
-
-		/*
-		 * VMware backdoor emulation on #GP interception only handles
-		 * IN{S}, OUT{S}, and RDPMC.
-		 */
-		if (!is_guest_mode(vcpu))
-			return kvm_emulate_instruction(vcpu,
-				EMULTYPE_VMWARE_GP | EMULTYPE_NO_DECODE);
-	} else {
-		/* All SVM instructions expect page aligned RAX */
-		if (svm->vmcb->save.rax & ~PAGE_MASK)
-			goto reinject;
-
-		return emulate_svm_instr(vcpu, opcode);
-	}
-
-reinject:
-	kvm_queue_exception_e(vcpu, GP_VECTOR, error_code);
+	fetch_microop(GP_VECTOR, vcpu);
 	return 1;
 }
 
@@ -4427,26 +4441,9 @@ static void __maybe_unused read_ibs_ctrl(u64 uop_cnt)
 
 	//u64 branch_target_rip = __read_msr(BP_IBSTGT_RIP);
 
-	//if ((phys_addr & 0xfd00000000) == 0xfd00000000) {
-	if (fuzz_state.current_op == MICROOP) {
-		if (opData3.ld_op == 1 || opData3.st_op == 1) {
-			pr_info("[RIP: 0x%016llx][uop cnt: %lld] [%6s%s] 0x%016llx (v=0x%016llx) UC[%s] WC[%s] CacheMiss [%s] tagToRetire [%4d] compToRetire [%4d] \n",
-				rip_value, uop_cnt,
-				opData3.ld_op ? "load" : "store",
-				memwithStrings[opData3.op_mem_width], phys_addr,
-				lin_addr, opData3.dc_wc_mem_acc ? "+" : "-",
-				opData3.dc_uc_mem_acc ? "+" : "-",
-				opData3.dc_miss ? "+" : "-",
-				opData1.tag_to_ret_ctr,
-				opData1.comp_to_ret_ctr);
-		} else {
-			pr_info("[RIP: 0x%016llx][uop cnt: %lld] [%8s] Branch[%3s] tagToRetire [%4d] compToRetire [%4d] micro [%3s] multiOP [%3s]\n",
-				rip_value, uop_cnt, "ALU",
-				opData1.op_brn_ret ? "yes" : "no",
-				opData1.tag_to_ret_ctr, opData1.comp_to_ret_ctr,
-				opData1.op_microcode ? "yes" : "no",
-				opData1.op_brn_fuse ? "yes" : "no");
-		}
+	if (fuzz_state.current_op == MICROOP && fuzz_state.file_open) {
+
+		ibs_log_event(rip_value, uop_cnt, opData3, opData1, phys_addr, lin_addr, memwithStrings);
 	}
 
 	ibs_op_ctl_data.val = 0;
@@ -4476,10 +4473,6 @@ static void ibs_apic_exit(void *info)
 	preempt_enable();
 }
 
-#define MAX_INSTRUCTION_COUNT 6000
-static u64 __maybe_unused ibs_uop_counter = 0;
-static u64 __maybe_unused repetition_counter = 0;
-
 static noinstr void svm_vcpu_enter_exit(struct kvm_vcpu *vcpu,
 					bool spec_ctrl_intercepted)
 {
@@ -4507,17 +4500,15 @@ static noinstr void svm_vcpu_enter_exit(struct kvm_vcpu *vcpu,
 			__svm_sev_es_vcpu_run(svm, spec_ctrl_intercepted,
 			sev_es_host_save_area(sd));
 	} else {
-		if (ibs_uop_counter <= MAX_INSTRUCTION_COUNT) {
-			write_ibs_ctrl(ibs_uop_counter);
+		if (fuzz_state.current_op == MICROOP && fuzz_state.file_open) {
+			write_ibs_ctrl(fuzz_state.fetch_counter);
 		}
 
 		__svm_vcpu_run(svm, spec_ctrl_intercepted);
 
-		if (ibs_uop_counter <= MAX_INSTRUCTION_COUNT) {
-			read_ibs_ctrl(ibs_uop_counter);
+		if (fuzz_state.current_op == MICROOP && fuzz_state.file_open && fuzz_state.fetch_counter <= MAX_INSTRUCTION_COUNT) {
+			read_ibs_ctrl(fuzz_state.fetch_counter);
 		}
-
-		ibs_uop_counter++;
 	}
 
 	raw_local_irq_disable();

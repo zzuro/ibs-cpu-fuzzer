@@ -10,4 +10,7 @@ void ibs_log_event(uint64_t rip_value, uint64_t uop_cnt,
                     union ibs_op_data3 opData3,
                     union ibs_op_data opData1,
                     uint64_t phys_addr, uint64_t lin_addr,
-                    const char * const *memwithStrings);
+                    char **memwithStrings);
+
+
+char *ibs_generate_filename(const u8 *bytes, size_t len);              

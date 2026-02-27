@@ -49,4 +49,6 @@ typedef struct fuzzer_state {
 
 	struct vmcb_save_area saved_state;
 
+	bool file_open;
+
 } fuzzer_state_t; 
