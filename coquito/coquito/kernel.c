@@ -28,6 +28,8 @@ extern char __bss_start[], __bss_end[];
 #define MAGIC_VALUE 0x1234DEADBEEF1234ULL
 #define ACCESS_ONCE(x) (*(volatile typeof(x) *)&(x))
 
+#define BASE 0x300000 //this address will hold the fuzzing instruction address
+
 static void init_data_bss(void)
 {
     // copy .data from ROM to RAM
@@ -221,9 +223,7 @@ void __attribute__((noreturn)) kernel_main(void)
     enable_avx();
     serial_puts(" OK!\n");
 
-    //this address will hold the fuzzing instruction address
-    uint64_t *base = (uint64_t *)0x300000;
-
+    
     paging__pt_entry_t *pte_300 = &pt->pt_entries[256]; // address 0x300000
     paging__pt_entry_t *pte_301 = &pt->pt_entries[257]; // address 0x301000
 
@@ -236,23 +236,24 @@ void __attribute__((noreturn)) kernel_main(void)
         "mov %1, %%rdi\n\t"
         "ud2\n\t"
         :
-        : "r"(base), "r"(MAGIC_VALUE)
+        : "i"(BASE), "r"(MAGIC_VALUE)
         : "rax", "rdi");
 
-    
-    //sanity check, check log if loads are visible
-    ACCESS_ONCE(base[0]);
-    ACCESS_ONCE(base[1]);
-    ACCESS_ONCE(base[2]);
-    ACCESS_ONCE(base[3]);
-    ACCESS_ONCE(base[4]);
-    ACCESS_ONCE(base[5]);
-    ACCESS_ONCE(base[6]);
 
+    // //sanity check, check log if loads are visible
+    ACCESS_ONCE(*(uint64_t*)BASE);
+    ACCESS_ONCE(*((uint64_t*)BASE + 1));
+    ACCESS_ONCE(*((uint64_t*)BASE + 2));
+    ACCESS_ONCE(*((uint64_t*)BASE + 3));
+    ACCESS_ONCE(*((uint64_t*)BASE + 4));
+    ACCESS_ONCE(*((uint64_t*)BASE + 5));
+    ACCESS_ONCE(*((uint64_t*)BASE + 6));
+    ACCESS_ONCE(*((uint64_t*)BASE + 7));
+    
     asm volatile(
-        "jmp *(%0) \n\t" // jump to the qword stored at [base]
+        "jmp *(%0) \n\t" 
         :
-        : "r"(base)
+        : "r"(BASE)
         : "memory");
     
     serial_puts("idling...\n");

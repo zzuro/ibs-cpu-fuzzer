@@ -1996,6 +1996,7 @@ static noinline void __used preamble(void)
         : "memory"
     );
 }
+
 static void write_instr(struct kvm_vcpu *vcpu)
 {
 	uint32_t i = 0;
@@ -2015,9 +2016,9 @@ static void write_instr(struct kvm_vcpu *vcpu)
 		fuzz_state.fuzz_mem2_host[i] = fuzz_state.inj.i.bytes[i];
 	}
 
-    *(uint64_t*)fuzz_state.fuzz_mem1_host = (uint64_t)fuzz_state.fuzz_mem1_guest + PAGE_SIZE - fuzz_state.inj.i.len - preamble_length;
+    *(uint64_t*) fuzz_state.fuzz_mem1_host = (uint64_t)fuzz_state.fuzz_mem1_guest + PAGE_SIZE - fuzz_state.inj.i.len - preamble_length;
 
-	pr_info("[Fuzzer] Starting address: 0x%llx\n", *(uint64_t*)fuzz_state.fuzz_mem1_host);
+	pr_info("[Fuzzer] Starting address: 0x%llx\n", *(uint64_t*) fuzz_state.fuzz_mem1_host);
 
 
 	kvm_register_write(vcpu, VCPU_REGS_RAX, 0ULL);
@@ -2155,6 +2156,8 @@ static void fetch_microop(int exit_code, struct kvm_vcpu *vcpu)
 
 	if(fuzz_state.current_op == MICROOP && fuzz_state.fetch_counter < MAX_INSTRUCTION_COUNT) {
 		fuzz_state.fetch_counter++;
+		write_instr(vcpu);
+		reset_state(vcpu);
 	}else if(fuzz_state.current_op == MICROOP) {
 		fuzz_state.current_op = INSTRUCTION;
 		ibs_log_close();
@@ -2169,8 +2172,6 @@ static int pf_interception(struct kvm_vcpu *vcpu)
 {
 	struct vcpu_svm *svm = to_svm(vcpu);
 	uint64_t cr2 = svm->vmcb->control.exit_info_2; //contains cr2 value at the time of page fault
-	pr_info("[Fuzzer] PF interception, CR2: 0x%llx\n", cr2);
-	pr_info("[Fuzzer] Expected CR2: 0x%llx\n", (uint64_t)fuzz_state.fuzz_mem2_guest);
 	if(cr2 == (uint64_t)fuzz_state.fuzz_mem2_guest) {
 		fuzz_state.inj.i.len++;
 		if(fuzz_state.inj.i.len <= MAX_INSN_LENGTH) {
