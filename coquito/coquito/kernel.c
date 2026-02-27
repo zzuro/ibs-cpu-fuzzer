@@ -239,7 +239,7 @@ void __attribute__((noreturn)) kernel_main(void)
         : "rax", "rdi");
 
     
-   
+    
     serial_puts("Idling...\n");
     while (true)
     {

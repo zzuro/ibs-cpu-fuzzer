@@ -1958,13 +1958,11 @@ static fuzzer_state_t fuzz_state = {
 	.inj = {
 		.i = {
 			.bytes = {0},
-			.len = 0,
+			.len = 1,
 		},
 		.index = 0,
 		.last_len = 0,
 	},
-
-	.current_length = 1,
 
 	.result = {
 		.valid = 0,
@@ -1984,10 +1982,11 @@ static void write_instr(void)
 {
 	uint32_t i = 0;
 	uint8_t* start = fuzz_state.fuzz_mem1_host + PAGE_SIZE - fuzz_state.inj.i.len;
+	pr_info("[Fuzzer] start: %p, len: %d\n", start, fuzz_state.inj.i.len);
+	pr_info("fuzz_state.fuzz_mem2_host: %p\n", fuzz_state.fuzz_mem2_host);
 	for(; i < fuzz_state.inj.i.len; i++) {
 		start[i] = fuzz_state.inj.i.bytes[i];
 	}
-
 	for(; i < MAX_INSN_LENGTH; i++) 
 	{
 		fuzz_state.fuzz_mem2_host[i] = fuzz_state.inj.i.bytes[i];
@@ -2052,6 +2051,8 @@ static void init_inj(void)
 
 static void setup_fuzzer(struct kvm_vcpu *vcpu)
 {
+	
+	pr_info("[Fuzzer] Setting up fuzzer\n");
 	svm_copy_vmrun_state(&fuzz_state.saved_state, &to_svm(vcpu)->vmcb->save);
 	
 	uint64_t gpa = kvm_rax_read(vcpu);
@@ -2187,7 +2188,8 @@ static int bp_interception(struct kvm_vcpu *vcpu)
 
 static int ud_interception(struct kvm_vcpu *vcpu)
 {
-	u64 rid = kvm_rip_read(vcpu);
+	u64 rid = kvm_register_read(vcpu, VCPU_REGS_RDI);
+	pr_info("[Fuzzer] UD interception, RID: 0x%llx\n", rid);
 	if (rid == MAGIC_VALUE) {
 		setup_fuzzer(vcpu);
 		write_instr();

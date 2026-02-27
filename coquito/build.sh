@@ -7,4 +7,4 @@ make clean
 make
 
 cd ..
-./.venv/bin/python image_build.py -b ./bootloader/vector.bin -c ./coquito/coquito.elf ../vms/qemu/min_kernel_ovmf.fddeactivate
+./.venv/bin/python image_build.py -b ./bootloader/vector.bin -c ./coquito/coquito.elf ../vms/qemu/min_kernel_ovmf.fd
