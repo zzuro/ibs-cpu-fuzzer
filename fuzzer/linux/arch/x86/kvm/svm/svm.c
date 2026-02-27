@@ -2169,6 +2169,8 @@ static int pf_interception(struct kvm_vcpu *vcpu)
 {
 	struct vcpu_svm *svm = to_svm(vcpu);
 	uint64_t cr2 = svm->vmcb->control.exit_info_2; //contains cr2 value at the time of page fault
+	pr_info("[Fuzzer] PF interception, CR2: 0x%llx\n", cr2);
+	pr_info("[Fuzzer] Expected CR2: 0x%llx\n", (uint64_t)fuzz_state.fuzz_mem2_guest);
 	if(cr2 == (uint64_t)fuzz_state.fuzz_mem2_guest) {
 		fuzz_state.inj.i.len++;
 		if(fuzz_state.inj.i.len <= MAX_INSN_LENGTH) {
