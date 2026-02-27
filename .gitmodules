@@ -1,3 +1,0 @@
-[submodule "vms/kvmtool"]
-	path = vms/kvmtool
-	url = git://git.kernel.org/pub/scm/linux/kernel/git/will/kvmtool.git
