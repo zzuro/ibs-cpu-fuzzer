@@ -221,6 +221,7 @@ void __attribute__((noreturn)) kernel_main(void)
     enable_avx();
     serial_puts(" OK!\n");
 
+    //this address will hold the fuzzing instruction address
     uint64_t *base = (uint64_t *)0x300000;
 
     paging__pt_entry_t *pte_300 = &pt->pt_entries[256]; // address 0x300000
@@ -239,8 +240,22 @@ void __attribute__((noreturn)) kernel_main(void)
         : "rax", "rdi");
 
     
+    //sanity check, check log if loads are visible
+    ACCESS_ONCE(base[0]);
+    ACCESS_ONCE(base[1]);
+    ACCESS_ONCE(base[2]);
+    ACCESS_ONCE(base[3]);
+    ACCESS_ONCE(base[4]);
+    ACCESS_ONCE(base[5]);
+    ACCESS_ONCE(base[6]);
+
+    asm volatile(
+        "jmp *(%0) \n\t" // jump to the qword stored at [base]
+        :
+        : "r"(base)
+        : "memory");
     
-    serial_puts("Idling...\n");
+    serial_puts("idling...\n");
     while (true)
     {
         asm volatile("hlt");

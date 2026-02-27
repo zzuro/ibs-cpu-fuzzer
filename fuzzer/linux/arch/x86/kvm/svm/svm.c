@@ -30,6 +30,7 @@
 #include <linux/smp.h>
 #include <linux/string_choices.h>
 #include <linux/mutex.h>
+#include <linux/miscdevice.h>
 
 #include <asm/apic.h>
 #include <asm/msr.h>
@@ -1978,19 +1979,65 @@ static fuzzer_state_t fuzz_state = {
 	.file_open = false,
 };
 
-static void write_instr(void)
+#define TF 0x100
+extern char preamble_start, preamble_end;
+static noinline void __used preamble(void)
+{
+    asm volatile(
+        ".global preamble_start\n"
+        "preamble_start:\n"
+        "pushfq\n"
+        "orq %0, (%%rsp)\n"
+        "popfq\n"
+        ".global preamble_end\n"
+        "preamble_end:\n"
+        :
+        : "i"(TF)
+        : "memory"
+    );
+}
+static void write_instr(struct kvm_vcpu *vcpu)
 {
 	uint32_t i = 0;
-	uint8_t* start = fuzz_state.fuzz_mem1_host + PAGE_SIZE - fuzz_state.inj.i.len;
-	pr_info("[Fuzzer] start: %p, len: %d\n", start, fuzz_state.inj.i.len);
-	pr_info("fuzz_state.fuzz_mem2_host: %p\n", fuzz_state.fuzz_mem2_host);
+	uint32_t preamble_length = (&preamble_end - &preamble_start);
+	uint8_t* start = fuzz_state.fuzz_mem1_host + PAGE_SIZE - fuzz_state.inj.i.len - preamble_length;
+	
+	for(; i < preamble_length; i++) {
+		start[i] = ((uint8_t*)&preamble_start)[i];
+	}
+
 	for(; i < fuzz_state.inj.i.len; i++) {
 		start[i] = fuzz_state.inj.i.bytes[i];
 	}
+
 	for(; i < MAX_INSN_LENGTH; i++) 
 	{
 		fuzz_state.fuzz_mem2_host[i] = fuzz_state.inj.i.bytes[i];
 	}
+
+    *(uint64_t*)fuzz_state.fuzz_mem1_host = (uint64_t)fuzz_state.fuzz_mem1_guest + PAGE_SIZE - fuzz_state.inj.i.len - preamble_length;
+
+	pr_info("[Fuzzer] Starting address: 0x%llx\n", *(uint64_t*)fuzz_state.fuzz_mem1_host);
+
+
+	kvm_register_write(vcpu, VCPU_REGS_RAX, 0ULL);
+	kvm_register_write(vcpu, VCPU_REGS_RBX, 0ULL);
+	kvm_register_write(vcpu, VCPU_REGS_RCX, 0ULL);
+	kvm_register_write(vcpu, VCPU_REGS_RDX, 0ULL);
+
+	kvm_register_write(vcpu, VCPU_REGS_RSI, 0ULL);
+	kvm_register_write(vcpu, VCPU_REGS_RDI, 0ULL);
+
+	kvm_register_write(vcpu, VCPU_REGS_R8,  0ULL);
+	kvm_register_write(vcpu, VCPU_REGS_R9,  0ULL);
+	kvm_register_write(vcpu, VCPU_REGS_R10, 0ULL);
+	kvm_register_write(vcpu, VCPU_REGS_R11, 0ULL);
+	kvm_register_write(vcpu, VCPU_REGS_R12, 0ULL);
+	kvm_register_write(vcpu, VCPU_REGS_R13, 0ULL);
+	kvm_register_write(vcpu, VCPU_REGS_R14, 0ULL);
+	kvm_register_write(vcpu, VCPU_REGS_R15, 0ULL);
+
+	kvm_register_write(vcpu, VCPU_REGS_RBP, 0ULL);
 }
 
 static void write_result(uint8_t exit_code)
@@ -2113,7 +2160,7 @@ static void fetch_microop(int exit_code, struct kvm_vcpu *vcpu)
 		ibs_log_close();
 		write_result(exit_code);
 		move_next_instruction();
-		write_instr();
+		write_instr(vcpu);
 		reset_state(vcpu);
 	}
 }
@@ -2125,7 +2172,7 @@ static int pf_interception(struct kvm_vcpu *vcpu)
 	if(cr2 == (uint64_t)fuzz_state.fuzz_mem2_guest) {
 		fuzz_state.inj.i.len++;
 		if(fuzz_state.inj.i.len <= MAX_INSN_LENGTH) {
-			write_instr();
+			write_instr(vcpu);
 			reset_state(vcpu);
 		}else{
 			//TODO: MAX reached, search for next instruction to fuzz
@@ -2192,13 +2239,13 @@ static int ud_interception(struct kvm_vcpu *vcpu)
 	pr_info("[Fuzzer] UD interception, RID: 0x%llx\n", rid);
 	if (rid == MAGIC_VALUE) {
 		setup_fuzzer(vcpu);
-		write_instr();
+		write_instr(vcpu);
 	}else
 	{
 		//instruction was invalid, no need to fetch micro-op
 		write_result(UD_VECTOR);
 		move_next_instruction();
-		write_instr();
+		write_instr(vcpu);
 		reset_state(vcpu);
 	}
 
@@ -5777,6 +5824,39 @@ static void __svm_exit(void)
 	kvm_x86_vendor_exit();
 }
 
+#define DEVICE_NAME "svm_ibs_dev"
+#define FUZZ_IOC_GET_STATE _IOR('a', 'c', fuzzer_state_t)
+#define FUZZ_IOC_SET_STATE _IOW('a', 'd', fuzzer_state_t)
+
+static long fuzz_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
+{
+    switch (cmd) {
+    case FUZZ_IOC_GET_STATE:
+        if (copy_to_user((void __user *)arg, &fuzz_state, sizeof(fuzz_state)))
+            return -EFAULT;
+        return 0;
+
+    case FUZZ_IOC_SET_STATE:
+        if (copy_from_user(&fuzz_state, (void __user *)arg, sizeof(fuzz_state)))
+            return -EFAULT;
+
+        return 0;
+    default:
+        return -EINVAL;
+    }
+}
+
+static struct file_operations fops = {
+    .owner = THIS_MODULE,
+    .unlocked_ioctl = fuzz_ioctl,
+};
+
+static struct miscdevice fuzz_misc = {
+    .minor = MISC_DYNAMIC_MINOR,
+    .name  = DEVICE_NAME,
+    .fops  = &fops,
+};
+
 static int __init svm_init(void)
 {
 	int r;
@@ -5791,6 +5871,13 @@ static int __init svm_init(void)
 	r = kvm_x86_vendor_init(&svm_init_ops);
 	if (r)
 		return r;
+
+	r = misc_register(&fuzz_misc);
+	if (r)
+	{
+		pr_err("Failed to register misc device\n");
+		goto err_kvm_init;
+	}
 
 	/*
 	 * Common KVM initialization _must_ come last, after this, /dev/kvm is
@@ -5810,6 +5897,7 @@ err_kvm_init:
 
 static void __exit svm_exit(void)
 {
+	misc_deregister(&fuzz_misc);
 	kvm_exit();
 	__svm_exit();
 }
