@@ -2018,8 +2018,6 @@ static void write_instr(struct kvm_vcpu *vcpu)
 
     *(uint64_t*) fuzz_state.fuzz_mem1_host = (uint64_t)fuzz_state.fuzz_mem1_guest + PAGE_SIZE - fuzz_state.inj.i.len - preamble_length;
 
-	pr_info("[Fuzzer] Starting address: 0x%llx\n", *(uint64_t*) fuzz_state.fuzz_mem1_host);
-
 
 	kvm_register_write(vcpu, VCPU_REGS_RAX, 0ULL);
 	kvm_register_write(vcpu, VCPU_REGS_RBX, 0ULL);
