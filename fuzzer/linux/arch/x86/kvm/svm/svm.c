@@ -2003,11 +2003,11 @@ static void write_instr(struct kvm_vcpu *vcpu)
 	uint32_t preamble_length = (&preamble_end - &preamble_start);
 	uint8_t* start = fuzz_state.fuzz_mem1_host + PAGE_SIZE - fuzz_state.inj.i.len - preamble_length;
 	
-	for(; i < preamble_length; i++) {
+	for(i = 0; i < preamble_length; i++) {
 		start[i] = ((uint8_t*)&preamble_start)[i];
 	}
 
-	for(; i < fuzz_state.inj.i.len; i++) {
+	for(i = 0; i < fuzz_state.inj.i.len && i < MAX_INSN_LENGTH; i++) {
 		start[i] = fuzz_state.inj.i.bytes[i];
 	}
 
@@ -2157,12 +2157,17 @@ static void fetch_microop(int exit_code, struct kvm_vcpu *vcpu)
 		write_instr(vcpu);
 		reset_state(vcpu);
 	}else if(fuzz_state.current_op == MICROOP) {
+
+		ibs_log_close();
+		fuzz_state.file_open = false;
+
+		write_result(exit_code);
+		move_next_instruction();
+		
 		fuzz_state.current_op = INSTRUCTION;
 		fuzz_state.fetch_counter = 0;
 		fuzz_state.inj.i.len = 1;
-		ibs_log_close();
-		write_result(exit_code);
-		move_next_instruction();
+		
 		write_instr(vcpu);
 		reset_state(vcpu);
 	}
@@ -2178,9 +2183,13 @@ static int pf_interception(struct kvm_vcpu *vcpu)
 			write_instr(vcpu);
 			reset_state(vcpu);
 		}else{
-			//TODO: MAX reached, search for next instruction to fuzz
+			pr_info("[Fuzzer] Instruction length exceeded max limit, moving to next instruction\n");
+			move_next_instruction(); // MAX reached, search for next instruction to fuzz
+			write_instr(vcpu);
+			reset_state(vcpu);
 		}
 	}else{
+		pr_info("[Fuzzer] Page fault at address: 0x%llx\n", cr2);
 		fetch_microop(PF_VECTOR, vcpu); //page fault issued by instruction itself
 	}
 	return 1;

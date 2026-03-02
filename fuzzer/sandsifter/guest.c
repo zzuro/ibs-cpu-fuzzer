@@ -250,6 +250,10 @@ int poll_instr(int fd)
 
 int main()
 {
+    int preamble_length = (&preamble_end - &preamble_start);
+    printf("Preamble length: %d\n", preamble_length);
+    return 0;
+    
     int fd, i;
     void *null_p;
 
