@@ -2137,19 +2137,9 @@ static void fetch_microop(int exit_code, struct kvm_vcpu *vcpu)
 {
 	if (fuzz_state.current_op == INSTRUCTION) {
 		fuzz_state.current_op = MICROOP;
-		char *path = ibs_generate_filename(fuzz_state.inj.i.bytes,
-						   fuzz_state.inj.i.len);
-		if (!path)
-			pr_err("[Fuzzer] Failed to generate log file path\n");
 		
-		pr_info("[Fuzzer] Fetching micro-op for instruction: %s\n", path);
-		//int res = ibs_log_open(path);
-		int res = 0;
-		if (res) {
-			pr_err("[Fuzzer] Failed to open log file\n");
-		} else {
-			fuzz_state.file_open = true;
-		}
+		ibs_trace_start(&fuzz_state.inj.i);
+		fuzz_state.file_open = true;
 	}
 
 	if(fuzz_state.current_op == MICROOP && fuzz_state.fetch_counter < MAX_INSTRUCTION_COUNT && false) {
@@ -2158,7 +2148,7 @@ static void fetch_microop(int exit_code, struct kvm_vcpu *vcpu)
 		reset_state(vcpu);
 	}else if(fuzz_state.current_op == MICROOP) {
 
-		//ibs_log_close();
+		ibs_trace_finished(&fuzz_state.inj.i);
 		fuzz_state.file_open = false;
 
 		write_result(exit_code);
@@ -4501,15 +4491,7 @@ static void __maybe_unused read_ibs_ctrl(u64 uop_cnt)
 	//u64 branch_target_rip = __read_msr(BP_IBSTGT_RIP);
 
 	if (fuzz_state.current_op == MICROOP && fuzz_state.file_open) {
-
-		(void)rip_value;
-		(void)uop_cnt;
-		(void)opData3;
-		(void)opData1;
-		(void)phys_addr;
-		(void)lin_addr;
-		(void)memwithStrings;
-		//ibs_log_event(rip_value, uop_cnt, opData3, opData1, phys_addr, lin_addr, memwithStrings);
+		ibs_trace_emit(rip_value, uop_cnt, phys_addr, lin_addr, opData3, opData1);
 	}
 
 	ibs_op_ctl_data.val = 0;
