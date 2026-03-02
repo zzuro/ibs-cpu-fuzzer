@@ -2158,6 +2158,8 @@ static void fetch_microop(int exit_code, struct kvm_vcpu *vcpu)
 		reset_state(vcpu);
 	}else if(fuzz_state.current_op == MICROOP) {
 		fuzz_state.current_op = INSTRUCTION;
+		fuzz_state.fetch_counter = 0;
+		fuzz_state.inj.i.len = 1;
 		ibs_log_close();
 		write_result(exit_code);
 		move_next_instruction();
