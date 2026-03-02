@@ -28,7 +28,7 @@ $(TARGET): $(OBJS)
 # Link guest test
 $(GUEST): $(GUEST_OBJS)
 	$(CC) $(GUEST_OBJS) -o $(GUEST)
-	scp -P 2222 $(GUEST) ubuntu@localhost:/home/ubuntu/
+#   scp -P 2222 $(GUEST) ubuntu@localhost:/home/ubuntu/
 
 # Compile rule
 %.o: %.c

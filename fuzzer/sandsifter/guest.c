@@ -249,20 +249,18 @@ int poll_instr(int fd)
 }
 
 int main()
-{
-    int preamble_length = (&preamble_end - &preamble_start);
-    printf("Preamble length: %d\n", preamble_length);
-    return 0;
-    
+{    
     int fd, i;
     void *null_p;
 
-    fd = open("/dev/virtio-ports/insnexec", O_RDWR);
-    if (fd < 0)
-    {
-        perror("open");
-        return 1;
-    }
+    fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) { perror("socket"); return 1; }
+
+    struct sockaddr_un addr = {0};
+    addr.sun_family = AF_UNIX;
+    strncpy(addr.sun_path, "/tmp/insnexec.sock", sizeof(addr.sun_path)-1);
+
+    if (connect(fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) { perror("connect"); return 1; }
 
     if (posix_memalign(&packet_buffer, PAGE_SIZE, PAGE_SIZE * 3) != 0)
     {
@@ -284,7 +282,9 @@ int main()
     stack_t ss = { .ss_size = SIGSTKSZ, .ss_sp = stack, };
     sigaltstack(&ss, 0);
 
-    while (1)
+
+    int count = 500;
+    while (count-- > 0)
     {
         if (poll_instr(fd))
         {

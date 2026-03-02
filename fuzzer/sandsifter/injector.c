@@ -121,23 +121,22 @@ void print_result(void)
 
 int main()
 {
-    int fd;
-    struct sockaddr_un addr;
+    const char *path = "/tmp/insnexec.sock";
 
-    fd = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (fd < 0)    {
-        perror("socket");
-        return 1;
-    }
+    int s = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (s < 0) { perror("socket"); return 1; }
 
-    memset(&addr, 0, sizeof(addr));
+    struct sockaddr_un addr = {0};
     addr.sun_family = AF_UNIX;
-    strcpy(addr.sun_path, "/tmp/insnexec.sock");
+    strncpy(addr.sun_path, path, sizeof(addr.sun_path)-1);
 
-    if (connect(fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
-        perror("connect");
-        return 1;
-    }
+    unlink(path);                       // remove stale file if any
+    if (bind(s, (struct sockaddr*)&addr, sizeof(addr)) < 0) { perror("bind"); return 1; }
+    if (listen(s, 16) < 0) { perror("listen"); return 1; }
+
+    printf("listening on %s\n", path);
+    int fd = accept(s, NULL, NULL);
+    if (fd < 0) { perror("accept"); return 1; }
 
     while(move_next_instruction()) {
         inject(fd);

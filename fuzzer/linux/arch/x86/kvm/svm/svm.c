@@ -2008,16 +2008,10 @@ static void write_instr(struct kvm_vcpu *vcpu)
 	}
 
 	for(i = 0; i < fuzz_state.inj.i.len && i < MAX_INSN_LENGTH; i++) {
-		start[i] = fuzz_state.inj.i.bytes[i];
-	}
-
-	for(; i < MAX_INSN_LENGTH; i++) 
-	{
-		fuzz_state.fuzz_mem2_host[i] = fuzz_state.inj.i.bytes[i];
+		start[i + preamble_length] = fuzz_state.inj.i.bytes[i];
 	}
 
     *(uint64_t*) fuzz_state.fuzz_mem1_host = (uint64_t)fuzz_state.fuzz_mem1_guest + PAGE_SIZE - fuzz_state.inj.i.len - preamble_length;
-
 
 	kvm_register_write(vcpu, VCPU_REGS_RAX, 0ULL);
 	kvm_register_write(vcpu, VCPU_REGS_RBX, 0ULL);
@@ -2037,6 +2031,7 @@ static void write_instr(struct kvm_vcpu *vcpu)
 	kvm_register_write(vcpu, VCPU_REGS_R15, 0ULL);
 
 	kvm_register_write(vcpu, VCPU_REGS_RBP, 0ULL);
+	kvm_register_write(vcpu, VCPU_REGS_RSP, fuzz_state.saved_state.rsp); 
 }
 
 static void write_result(uint8_t exit_code)
@@ -2085,6 +2080,9 @@ static void move_next_instruction(void)
         }
         fuzz_state.inj.last_len = -1;
     }
+
+	//when generating new instruction, we need to reset the length
+	fuzz_state.inj.i.len = 1;
 }
 
 static void init_inj(void)
@@ -2143,8 +2141,10 @@ static void fetch_microop(int exit_code, struct kvm_vcpu *vcpu)
 						   fuzz_state.inj.i.len);
 		if (!path)
 			pr_err("[Fuzzer] Failed to generate log file path\n");
-
-		int res = ibs_log_open(path);
+		
+		pr_info("[Fuzzer] Fetching micro-op for instruction: %s\n", path);
+		//int res = ibs_log_open(path);
+		int res = 0;
 		if (res) {
 			pr_err("[Fuzzer] Failed to open log file\n");
 		} else {
@@ -2152,13 +2152,13 @@ static void fetch_microop(int exit_code, struct kvm_vcpu *vcpu)
 		}
 	}
 
-	if(fuzz_state.current_op == MICROOP && fuzz_state.fetch_counter < MAX_INSTRUCTION_COUNT) {
+	if(fuzz_state.current_op == MICROOP && fuzz_state.fetch_counter < MAX_INSTRUCTION_COUNT && false) {
 		fuzz_state.fetch_counter++;
 		write_instr(vcpu);
 		reset_state(vcpu);
 	}else if(fuzz_state.current_op == MICROOP) {
 
-		ibs_log_close();
+		//ibs_log_close();
 		fuzz_state.file_open = false;
 
 		write_result(exit_code);
@@ -2166,7 +2166,6 @@ static void fetch_microop(int exit_code, struct kvm_vcpu *vcpu)
 		
 		fuzz_state.current_op = INSTRUCTION;
 		fuzz_state.fetch_counter = 0;
-		fuzz_state.inj.i.len = 1;
 		
 		write_instr(vcpu);
 		reset_state(vcpu);
@@ -2189,7 +2188,6 @@ static int pf_interception(struct kvm_vcpu *vcpu)
 			reset_state(vcpu);
 		}
 	}else{
-		pr_info("[Fuzzer] Page fault at address: 0x%llx\n", cr2);
 		fetch_microop(PF_VECTOR, vcpu); //page fault issued by instruction itself
 	}
 	return 1;
@@ -4504,7 +4502,14 @@ static void __maybe_unused read_ibs_ctrl(u64 uop_cnt)
 
 	if (fuzz_state.current_op == MICROOP && fuzz_state.file_open) {
 
-		ibs_log_event(rip_value, uop_cnt, opData3, opData1, phys_addr, lin_addr, memwithStrings);
+		(void)rip_value;
+		(void)uop_cnt;
+		(void)opData3;
+		(void)opData1;
+		(void)phys_addr;
+		(void)lin_addr;
+		(void)memwithStrings;
+		//ibs_log_event(rip_value, uop_cnt, opData3, opData1, phys_addr, lin_addr, memwithStrings);
 	}
 
 	ibs_op_ctl_data.val = 0;
