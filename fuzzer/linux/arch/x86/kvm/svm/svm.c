@@ -2142,7 +2142,7 @@ static void fetch_microop(int exit_code, struct kvm_vcpu *vcpu)
 		fuzz_state.file_open = true;
 	}
 
-	if(fuzz_state.current_op == MICROOP && fuzz_state.fetch_counter < MAX_INSTRUCTION_COUNT && false) {
+	if(fuzz_state.current_op == MICROOP && fuzz_state.fetch_counter < MAX_INSTRUCTION_COUNT) {
 		fuzz_state.fetch_counter++;
 		write_instr(vcpu);
 		reset_state(vcpu);
