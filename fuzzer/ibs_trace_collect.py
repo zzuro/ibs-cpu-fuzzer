@@ -15,6 +15,7 @@ import select
 from pathlib import Path
 import ctypes
 import shlex
+import csv
 
 TRACEFS = Path("/sys/kernel/tracing")
 TRACE_PIPE = TRACEFS / "trace_pipe"
@@ -25,7 +26,7 @@ ENABLE_EVENT  = EVENT_DIR / "ibs_event"  / "enable"
 
 LOG_DIR = Path("/home/avezzu/ibs_log")
 IBS_PREFIX = str(LOG_DIR / "ibs_")
-IBS_SUFFIX = ".log"
+IBS_SUFFIX = ".csv"
 
 DEVICE_NAME = "/dev/svm_ibs_dev"
 
@@ -236,6 +237,55 @@ def kill_qemu(proc: subprocess.Popen, sig=signal.SIGTERM, grace_sec: float = 2.0
 # ----------------------------
 # Main trace loop with timeout
 # ----------------------------
+def to_bool(value):
+    if value is None:
+        return None
+    value = value.strip().lower()
+    if value in ["yes", "+", "true"]:
+        return True
+    if value in ["no", "-", "false"]:
+        return False
+    return None
+
+
+def parse_ibs_trace(line: str, writer: csv.writer) -> None:
+    pattern = re.compile(
+        r"\[RIP:\s*(?P<RIP>0x[0-9a-fA-F]+)\]"
+        r"\[uop cnt:\s*(?P<uop_cnt>\d+)\]\s+"
+        r"\[\s*(?P<op_type>\w+)\]"
+        r"(?:\s+(?P<phys_addr>0x[0-9a-fA-F]+)\s+\(v=(?P<lin_addr>0x[0-9a-fA-F]+)\))?"
+        r"(?:\s+UC\[(?P<UC>[+-])\])?"
+        r"(?:\s+WC\[(?P<WC>[+-])\])?"
+        r"(?:\s+CacheMiss\s+\[(?P<CacheMiss>[+-])\])?"
+        r"(?:\s+Branch\[\s*(?P<Branch>\w+)\])?"
+        r"\s+tagToRetire\s+\[\s*(?P<tagToRetire>\d+)\]"
+        r"\s+compToRetire\s+\[\s*(?P<compToRetire>\d+)\]"
+        r"(?:\s+micro\s+\[\s*(?P<micro>\w+)\])?"
+        r"(?:\s+multiOP\s+\[\s*(?P<multiOP>\w+)\])?"
+    )
+
+    match = pattern.search(line)
+    if not match:
+        print(f"WARN: Unrecognized trace line format: {line}", file=sys.stderr)
+        return
+    
+    data = match.groupdict()
+    writer.writerow([
+        data.get("RIP"),
+        int(data.get("uop_cnt")) if data.get("uop_cnt") else None,
+        data.get("op_type"),
+        data.get("phys_addr"),
+        data.get("lin_addr"),
+        to_bool(data.get("UC")),
+        to_bool(data.get("WC")),
+        to_bool(data.get("CacheMiss")),
+        to_bool(data.get("Branch")),
+        int(data.get("tagToRetire")) if data.get("tagToRetire") else None,
+        int(data.get("compToRetire")) if data.get("compToRetire") else None,
+        to_bool(data.get("micro")),
+        to_bool(data.get("multiOP")),
+    ])
+
 def trace_loop_with_timeout(
     device_fd: int,
     qemu_proc: subprocess.Popen,
@@ -266,6 +316,7 @@ def trace_loop_with_timeout(
 
     state = "WAIT_START"
     out = None
+    csv_writer = None
 
     print(f"Reading {TRACE_PIPE} ...", file=sys.stdout)
     last_activity = time.time()
@@ -300,6 +351,7 @@ def trace_loop_with_timeout(
                 # EOF (unlikely for trace_pipe), treat as timeout-ish
                 continue
 
+            last_activity = time.time()
             line = line.rstrip("\n")
 
             is_marker = "ibs_marker:" in line
@@ -314,6 +366,12 @@ def trace_loop_with_timeout(
 
                     current_path = generate_filename(insn)
                     out = open(current_path, "w", buffering=1)
+                    csv_writer = csv.writer(out)
+                    csv_writer.writerow([
+                        "RIP", "uop_cnt", "op_type", "phys_addr", "lin_addr",
+                        "UC", "WC", "CacheMiss", "Branch", "tagToRetire",
+                        "compToRetire", "micro", "multiOP"
+                    ])
                     state = "COLLECT_EVENTS"
                 continue
 
@@ -321,11 +379,12 @@ def trace_loop_with_timeout(
                 if is_event:
                     if out:
                         payload = line.split("ibs_event:", 1)[1].strip()
-                        out.write(payload + "\n")
+                        parse_ibs_trace(payload, csv_writer)
                 elif is_marker and "FINISHED" in line:
                     if out:
                         out.close()
                     out = None
+                    csv_writer = None
                     state = "WAIT_START"
                 continue
 
