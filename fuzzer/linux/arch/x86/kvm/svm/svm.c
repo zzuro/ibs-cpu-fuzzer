@@ -2042,24 +2042,102 @@ static void write_result(uint8_t exit_code)
 	res->valid = true;
 }
 
+static void fuzz_clear_pending_events(struct kvm_vcpu *vcpu)
+{
+	vcpu->arch.exception.pending = false;
+	vcpu->arch.exception.injected = false;
+	vcpu->arch.exception.vector = 0;
+	vcpu->arch.exception.error_code = 0;
+	vcpu->arch.exception.has_error_code = false;
+
+	vcpu->arch.interrupt.soft = false;
+	vcpu->arch.interrupt.injected = false;
+	vcpu->arch.interrupt.nr = 0;
+
+	vcpu->arch.nmi_pending = 0;
+	vcpu->arch.nmi_injected = false;
+}
+
+static void fuzz_restore_ctrl(struct kvm_vcpu *vcpu, struct vmcb_save_area *s)
+{
+	vcpu->arch.efer = s->efer;
+
+	kvm_set_cr0(vcpu, s->cr0);
+	kvm_set_cr3(vcpu, s->cr3);
+	kvm_set_cr4(vcpu, s->cr4);
+
+	kvm_set_rflags(vcpu, s->rflags | X86_EFLAGS_FIXED);
+}
+
+static void fuzz_restore_gprs(struct kvm_vcpu *vcpu, struct vmcb_save_area *s)
+{
+	kvm_rsp_write(vcpu, s->rsp);
+	kvm_rip_write(vcpu, s->rip);
+}
+
+static void svmseg_to_kvmseg(struct kvm_segment *dst, struct vmcb_seg *src)
+{
+	memset(dst, 0, sizeof(*dst));
+	dst->selector = src->selector;
+	dst->base     = src->base;
+	dst->limit    = src->limit;
+	dst->type     = src->attrib & SVM_SELECTOR_TYPE_MASK;
+	dst->s        = (src->attrib >> SVM_SELECTOR_S_SHIFT) & 1;
+	dst->dpl      = (src->attrib >> SVM_SELECTOR_DPL_SHIFT) & 3;
+	dst->present  = (src->attrib >> SVM_SELECTOR_P_SHIFT) & 1;
+	dst->avl      = (src->attrib >> SVM_SELECTOR_AVL_SHIFT) & 1;
+	dst->l        = (src->attrib >> SVM_SELECTOR_L_SHIFT) & 1;
+	dst->db       = (src->attrib >> SVM_SELECTOR_DB_SHIFT) & 1;
+	dst->g        = src->limit > 0xfffff;
+	dst->unusable = !(src->attrib >> SVM_SELECTOR_P_SHIFT) & 1;
+}
+
+static inline void vmcb_dt_to_desc_ptr(struct desc_ptr *out, struct vmcb_seg *in)
+                                       
+{
+	out->address = in->base;
+	out->size    = in->limit;
+}
+
+static void fuzz_restore_segs(struct kvm_vcpu *vcpu, struct vmcb_save_area *s)
+{
+	struct kvm_segment seg;
+
+	svmseg_to_kvmseg(&seg, &s->cs);
+	svm_get_segment(vcpu, &seg, VCPU_SREG_CS);
+
+	svmseg_to_kvmseg(&seg, &s->ss);
+	svm_get_segment(vcpu, &seg, VCPU_SREG_SS);
+
+	svmseg_to_kvmseg(&seg, &s->ds);
+	svm_get_segment(vcpu, &seg, VCPU_SREG_DS);
+
+	svmseg_to_kvmseg(&seg, &s->es);
+	svm_get_segment(vcpu, &seg, VCPU_SREG_ES);
+
+	struct desc_ptr dt;
+	vmcb_dt_to_desc_ptr(&dt, &s->gdtr);
+	svm_set_gdt(vcpu, &dt);
+
+	vmcb_dt_to_desc_ptr(&dt, &s->idtr);
+	svm_set_idt(vcpu, &dt);
+
+}
 
 static void reset_state(struct kvm_vcpu *vcpu)
 {
-	struct vcpu_svm *svm = to_svm(vcpu);
-
-	svm_copy_vmrun_state(&svm->vmcb->save, &fuzz_state.saved_state);
-	vmcb_mark_all_dirty(svm->vmcb);
 	
-	kvm_set_rflags(vcpu, fuzz_state.saved_state.rflags);
+	struct vmcb_save_area *s = &fuzz_state.saved_state;
+	fuzz_clear_pending_events(vcpu);
+	fuzz_restore_ctrl(vcpu, s);
+	fuzz_restore_gprs(vcpu, s);
+	fuzz_restore_segs(vcpu, s);
 
-	svm_set_efer(vcpu, fuzz_state.saved_state.efer);
+	kvm_make_request(KVM_REQ_EVENT, vcpu);
+	kvm_make_request(KVM_REQ_TLB_FLUSH, vcpu);
+	kvm_make_request(KVM_REQ_MMU_SYNC, vcpu);
 
-	svm_set_cr0(vcpu, fuzz_state.saved_state.cr0);
-	svm_set_cr4(vcpu, fuzz_state.saved_state.cr4);
-
-	kvm_rip_write(vcpu, fuzz_state.saved_state.rip + UD2_SIZE);
-	kvm_rsp_write(vcpu, fuzz_state.saved_state.rsp);
-	kvm_rax_write(vcpu, fuzz_state.saved_state.rax);
+	vmcb_mark_all_dirty(to_svm(vcpu)->vmcb);
 }
 
 static void move_next_instruction(void)
@@ -2098,6 +2176,7 @@ static void setup_fuzzer(struct kvm_vcpu *vcpu)
 	
 	pr_info("[Fuzzer] Setting up fuzzer\n");
 	svm_copy_vmrun_state(&fuzz_state.saved_state, &to_svm(vcpu)->vmcb->save);
+	fuzz_state.saved_state.rip += UD2_SIZE; //skip UD2 instruction
 	
 	uint64_t gpa = kvm_rax_read(vcpu);
 	struct kvm_host_map map;

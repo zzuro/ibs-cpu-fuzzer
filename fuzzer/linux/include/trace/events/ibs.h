@@ -51,7 +51,7 @@ TRACE_EVENT(
 				 (mem_width == 12) ? "?C" :
 				 (mem_width == 13) ? "?D" :
 				 (mem_width == 14) ? "?E" :
-				 (mem_width == 15) ? "?F" : "?");
+				 (mem_width == 15) ? "?F" : "?";
 
 		if (is_load || is_store) {
 			scnprintf(
