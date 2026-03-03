@@ -4,40 +4,74 @@
 #if !defined(_IBS_LOGGER_H) || defined(TRACE_HEADER_MULTI_READ)
 #define _IBS_LOGGER_H
 
+#define IBS_F_LOAD (1u << 0)
+#define IBS_F_STORE (1u << 1)
+#define IBS_F_DCMISS (1u << 2)
+#define IBS_F_UC (1u << 3)
+#define IBS_F_WC (1u << 4)
+#define IBS_F_BRNRET (1u << 5)
+#define IBS_F_MICRO (1u << 6)
+#define IBS_F_BRNFUSE (1u << 7)
+
 #include <linux/tracepoint.h>
 
 // TRACE event for IBS data
 TRACE_EVENT(
 	ibs_event,
-	TP_PROTO(u64 rip, u64 uop_cnt, u64 phys, u64 lin, u8 is_load,
-		 u8 is_store, u8 mem_width, u8 dc_miss, u8 uc, u8 wc,
-		 u16 tag_to_ret, u16 comp_to_ret),
+	TP_PROTO(u64 rip, u64 uop_cnt, u64 phys, u64 lin, u8 mem_width,
+		 u32 flags, u16 tag_to_ret, u16 comp_to_ret),
 
-	TP_ARGS(rip, uop_cnt, phys, lin, is_load, is_store, mem_width, dc_miss,
-		uc, wc, tag_to_ret, comp_to_ret),
+	TP_ARGS(rip, uop_cnt, phys, lin, mem_width, flags, tag_to_ret,
+		comp_to_ret),
 
-	TP_STRUCT__entry(
-		__field(u64, rip) __field(u64, uop_cnt) __field(u64, phys)
-			__field(u64, lin) __field(u8, is_load) __field(
-				u8, is_store) __field(u8, mem_width)
-				__field(u8, dc_miss) __field(u8, uc)
-					__field(u8, wc) __field(u16, tag_to_ret)
-						__field(u16, comp_to_ret)),
+	TP_STRUCT__entry(__array(char, msg, 512)),
 
-	TP_fast_assign(__entry->rip = rip; __entry->uop_cnt = uop_cnt;
-		       __entry->phys = phys; __entry->lin = lin;
-		       __entry->is_load = is_load; __entry->is_store = is_store;
-		       __entry->mem_width = mem_width;
-		       __entry->dc_miss = dc_miss; __entry->uc = uc;
-		       __entry->wc = wc; __entry->tag_to_ret = tag_to_ret;
-		       __entry->comp_to_ret = comp_to_ret;),
+	TP_fast_assign(
+		uint8_t is_load = flags & IBS_F_LOAD;
+		uint8_t is_store = flags & IBS_F_STORE;
+		uint8_t dc_miss = flags & IBS_F_DCMISS;
+		uint8_t dc_uc_mem_acc = flags & IBS_F_UC;
+		uint8_t dc_wc_mem_acc = flags & IBS_F_WC;
+		uint8_t op_brn_ret = flags & IBS_F_BRNRET;
+		uint8_t op_microcode = flags & IBS_F_MICRO;
+		uint8_t op_brn_fuse = flags & IBS_F_BRNFUSE;
 
-	TP_printk(
-		"rip=0x%016llx uop=%llu %s%s mw=%u phys=0x%016llx lin=0x%016llx miss=%u uc=%u wc=%u tag=%u comp=%u",
-		__entry->rip, __entry->uop_cnt, __entry->is_load ? "L" : "",
-		__entry->is_store ? "S" : "", __entry->mem_width, __entry->phys,
-		__entry->lin, __entry->dc_miss, __entry->uc, __entry->wc,
-		__entry->tag_to_ret, __entry->comp_to_ret));
+		const char *mw = (mem_width == 0)  ? "0" :
+				 (mem_width == 1)  ? "1" :
+				 (mem_width == 2)  ? "2" :
+				 (mem_width == 3)  ? "4" :
+				 (mem_width == 4)  ? "8" :
+				 (mem_width == 5)  ? "16" :
+				 (mem_width == 6)  ? "32" :
+				 (mem_width == 7)  ? "64" :
+				 (mem_width == 8)  ? "?8" :
+				 (mem_width == 9)  ? "?9" :
+				 (mem_width == 10) ? "?A" :
+				 (mem_width == 11) ? "?B" :
+				 (mem_width == 12) ? "?C" :
+				 (mem_width == 13) ? "?D" :
+				 (mem_width == 14) ? "?E" :
+				 (mem_width == 15) ? "?F" : "?");
+
+		if (is_load || is_store) {
+			scnprintf(
+				__entry->msg, sizeof(__entry->msg),
+				"[RIP: 0x%016llx][uop cnt: %llu] [%6s%s] 0x%016llx (v=0x%016llx) UC[%s] WC[%s] CacheMiss [%s] tagToRetire [%4u] compToRetire [%4u]\n",
+				rip, uop_cnt, is_load ? "load" : "store", mw,
+				phys, lin, dc_uc_mem_acc ? "+" : "-",
+				dc_wc_mem_acc ? "+" : "-", dc_miss ? "+" : "-",
+				tag_to_ret, comp_to_ret);
+		} else {
+			scnprintf(
+				__entry->msg, sizeof(__entry->msg),
+				"[RIP: 0x%016llx][uop cnt: %llu] [%8s] Branch[%3s] tagToRetire [%4u] compToRetire [%4u] micro [%3s] multiOP [%3s]\n",
+				rip, uop_cnt, "ALU", op_brn_ret ? "yes" : "no",
+				tag_to_ret, comp_to_ret,
+				op_microcode ? "yes" : "no",
+				op_brn_fuse ? "yes" : "no");
+		}),
+
+	TP_printk("%s", __entry->msg));
 
 // Helper function to emit IBS trace events
 TRACE_EVENT(ibs_marker, TP_PROTO(const char *msg, const u8 *bytes, u32 len),

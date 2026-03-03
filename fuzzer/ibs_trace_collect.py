@@ -94,17 +94,16 @@ def main() -> int:
 
                     current_path = generate_filename(insn)
                     out = open(current_path, "w", buffering=1)
-                    out.write(line + "\n")
                     state = "COLLECT_EVENTS"
                 continue
 
             if state == "COLLECT_EVENTS":
                 if is_event:
                     if out:
+                        line = line.split("ibs_event:", 1)[1].strip()
                         out.write(line + "\n")
                 elif is_marker and "FINISHED" in line:
                     if out:
-                        out.write(line + "\n")
                         out.close()
                     out = None
                     current_path = None
