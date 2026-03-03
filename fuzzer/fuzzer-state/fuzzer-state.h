@@ -99,7 +99,6 @@ typedef struct fuzzer_state {
 
 	range_t total_range;
 	inj_t inj;
-	uint32_t current_length;
 	result_t result;
 
 	fuzzing_op current_op;

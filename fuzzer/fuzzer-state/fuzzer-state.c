@@ -13,6 +13,12 @@
 
 int main()
 {
+    
+    printf("FUZZ_IOC_GET_STATE: 0x%lx\n", FUZZ_IOC_GET_STATE);
+    printf("FUZZ_IOC_SET_STATE: 0x%lx\n", FUZZ_IOC_SET_STATE);
+    printf("sizeof(fuzzer_state_t): %lu bytes\n", sizeof(fuzzer_state_t));
+
+    return 0;
     int fd = open(DEVICE_NAME, O_RDWR);
     if (fd < 0)
     {

@@ -5,4 +5,4 @@ qemu-system-x86_64 \
   -cpu host \
   -net none \
   -serial mon:stdio \
-  -bios ./qemu/min_kernel_ovmf.fd 
+  -bios /home/avezzu/ibs-cpu-fuzzer/vms/qemu/min_kernel_ovmf.fd 
