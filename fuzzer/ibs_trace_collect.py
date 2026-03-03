@@ -24,7 +24,7 @@ EVENT_DIR = TRACEFS / "events" / "ibs"
 ENABLE_MARKER = EVENT_DIR / "ibs_marker" / "enable"
 ENABLE_EVENT  = EVENT_DIR / "ibs_event"  / "enable"
 
-LOG_DIR = Path("/home/avezzu/ibs_log")
+LOG_DIR = Path("/mnt/home/avezzu/ibs_log")
 IBS_PREFIX = str(LOG_DIR / "ibs_")
 IBS_SUFFIX = ".csv"
 
@@ -286,14 +286,26 @@ def parse_ibs_trace(line: str, writer: csv.writer) -> None:
         to_bool(data.get("multiOP")),
     ])
 
+
+def log_timeout_instruction(crash_log_path: Path, insn_bytes: bytes, note: str = "trace_pipe inactivity timeout") -> None:
+    crash_log_path.parent.mkdir(parents=True, exist_ok=True)
+    ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+    insn_hex = insn_bytes.hex() if insn_bytes else "UNKNOWN"
+    # one-line append
+    with open(crash_log_path, "a", buffering=1) as fp:
+        fp.write(f"[{ts}] {note} insn={insn_hex}\n")
+
 def trace_loop_with_timeout(
     device_fd: int,
     qemu_proc: subprocess.Popen,
     inactivity_timeout: float,
-    on_timeout_state_path: Path
+    on_timeout_state_path: Path,
+    resume: bool = False,
+    qemu_script : Path = None
 ) -> int:
     try:
-        reset_log_directory()
+        if not resume:
+            reset_log_directory()
     except Exception as e:
         print(f"Failed to reset log directory: {e}", file=sys.stderr)
         return 1
@@ -317,6 +329,8 @@ def trace_loop_with_timeout(
     state = "WAIT_START"
     out = None
     csv_writer = None
+    current_insn = b""
+    crash_log = LOG_DIR / "timeouts.log"
 
     print(f"Reading {TRACE_PIPE} ...", file=sys.stdout)
     last_activity = time.time()
@@ -325,9 +339,14 @@ def trace_loop_with_timeout(
         while True:
             now = time.time()
 
-            # inactivity timeout check
+            # inactivity timeout check, try to restart
             if inactivity_timeout > 0 and (now - last_activity) >= inactivity_timeout:
                 print(f"TIMEOUT: no trace_pipe activity for {inactivity_timeout}s", file=sys.stderr)
+                try:
+                    log_timeout_instruction(crash_log, current_insn)
+                    print(f"Logged timeout instruction to {crash_log}", file=sys.stderr)
+                except Exception as e:
+                    print(f"WARN: failed to log timeout instruction: {e}", file=sys.stderr)
                 try:
                     st = ioctl_get_state(device_fd)
                     dump_state_to_file(st, on_timeout_state_path)
@@ -339,8 +358,24 @@ def trace_loop_with_timeout(
                     print("Stopping QEMU ...", file=sys.stderr)
                     kill_qemu(qemu_proc)
 
-                return 2
+                try:
+                    qemu_proc = start_qemu(parse_qemu_script(qemu_script)) 
+                    print(f"Restarted QEMU (pid={qemu_proc.pid})", file=sys.stderr)
+                except Exception as e:
+                    print(f"ERROR: failed to restart QEMU: {e}", file=sys.stderr)
+                    return 2  # can't proceed without qemu
+                
+                if out:
+                    try: out.close()
+                    except Exception: pass
+                out = None
+                csv_writer = None
+                current_insn = b""
+                state = "WAIT_START"
+                last_activity = time.time()
+                continue
 
+    
             # Wait for trace_pipe readability with a short poll interval
             r, _, _ = select.select([tf], [], [], 0.25)
             if not r:
@@ -363,7 +398,8 @@ def trace_loop_with_timeout(
                     if not insn:
                         print(f"WARN: START without parsable bytes: {line}", file=sys.stderr)
                         continue
-
+                    
+                    current_insn = insn
                     current_path = generate_filename(insn)
                     out = open(current_path, "w", buffering=1)
                     csv_writer = csv.writer(out)
@@ -385,6 +421,7 @@ def trace_loop_with_timeout(
                         out.close()
                     out = None
                     csv_writer = None
+                    current_insn = b""
                     state = "WAIT_START"
                 continue
 
@@ -408,7 +445,7 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--qemu-script", default="./../vms/qemu.sh", help="Path to qemu start script")
     ap.add_argument("--timeout", type=float, default=30.0, help="Inactivity timeout (seconds) on trace_pipe; 0 disables")
-    ap.add_argument("--state-file", default="/home/avezzu/ibs_log/fuzz_state.bin",
+    ap.add_argument("--state-file", default="/mnt/home/avezzu/ibs_log/fuzz_state.bin",
                     help="Where to dump fuzz_state on timeout (and/or for periodic dumps)")
     ap.add_argument("--resume", action="store_true",
                     help="Resume from --state-file instead of resetting to defaults")
@@ -438,6 +475,7 @@ def main() -> int:
         return 1
 
     qemu_proc = None
+    qemu_script = None
     if not args.no_qemu:
         qemu_script = Path(args.qemu_script)
         try:
@@ -452,7 +490,9 @@ def main() -> int:
         device_fd=dev_fd,
         qemu_proc=qemu_proc,
         inactivity_timeout=args.timeout,
-        on_timeout_state_path=state_path
+        on_timeout_state_path=state_path,
+        resume=args.resume,
+        qemu_script=qemu_script
     )
 
     try:
