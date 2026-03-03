@@ -1934,6 +1934,7 @@ static void svm_set_dr7(struct kvm_vcpu *vcpu, unsigned long value)
 
 
 #define MAX_INSTRUCTION_COUNT 6000
+#define PER_INSTRUCTION_COUNTER 10
 static fuzzer_state_t fuzz_state = {
 	.fuzz_mem1_host  = NULL,
 	.fuzz_mem1_guest = NULL,
@@ -1973,6 +1974,7 @@ static fuzzer_state_t fuzz_state = {
 
 	.current_op = START,
 	.fetch_counter = 0,
+	.per_instruction_counter = 0,
 
 	.saved_state = {},
 
@@ -2209,6 +2211,7 @@ static void setup_fuzzer(struct kvm_vcpu *vcpu)
 
 	fuzz_state.current_op = INSTRUCTION;
 	fuzz_state.fetch_counter = 0;
+	fuzz_state.per_instruction_counter = 0;
 	fuzz_state.file_open = false;
 }
 
@@ -2221,11 +2224,21 @@ static void fetch_microop(int exit_code, struct kvm_vcpu *vcpu)
 		fuzz_state.file_open = true;
 	}
 
-	if(fuzz_state.current_op == MICROOP && fuzz_state.fetch_counter < MAX_INSTRUCTION_COUNT) {
+	if(fuzz_state.current_op == MICROOP && fuzz_state.fetch_counter < MAX_INSTRUCTION_COUNT /*&& fuzz_state.per_instruction_counter >= PER_INSTRUCTION_COUNTER*/) {
 		fuzz_state.fetch_counter++;
+		fuzz_state.per_instruction_counter = 0;
 		write_instr(vcpu);
 		reset_state(vcpu);
-	}else if(fuzz_state.current_op == MICROOP) {
+
+	}
+	// else if(fuzz_state.current_op == MICROOP && fuzz_state.fetch_counter <= MAX_INSTRUCTION_COUNT && fuzz_state.per_instruction_counter < PER_INSTRUCTION_COUNTER)
+	// {
+	// 	fuzz_state.per_instruction_counter++;
+	// 	write_instr(vcpu);
+	// 	reset_state(vcpu);
+	// }
+	
+	else if(fuzz_state.current_op == MICROOP) {
 
 		ibs_trace_finished(&fuzz_state.inj.i);
 		fuzz_state.file_open = false;
@@ -2235,6 +2248,7 @@ static void fetch_microop(int exit_code, struct kvm_vcpu *vcpu)
 		
 		fuzz_state.current_op = INSTRUCTION;
 		fuzz_state.fetch_counter = 0;
+		fuzz_state.per_instruction_counter = 0;
 		
 		write_instr(vcpu);
 		reset_state(vcpu);

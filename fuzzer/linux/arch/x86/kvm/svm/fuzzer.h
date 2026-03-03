@@ -45,6 +45,7 @@ typedef struct fuzzer_state {
 
 	fuzzing_op current_op;
 	uint64_t fetch_counter;
+	uint64_t per_instruction_counter;
 
 	struct vmcb_save_area saved_state;
 

@@ -118,6 +118,7 @@ class FuzzerState(ctypes.Structure):
 
         ("current_op", FuzzingOp),      
         ("fetch_counter", ctypes.c_uint64),
+        ("per_instruction_counter", ctypes.c_uint64),
 
         ("saved_state", VmcbSaveArea),
 

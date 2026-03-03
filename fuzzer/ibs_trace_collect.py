@@ -50,6 +50,11 @@ def reset_log_directory():
 def enable_event(enable_path: Path) -> None:
     enable_path.write_text("1\n")
 
+def set_tracing_buffer_size(size_kb: int) -> None:
+    if int((TRACEFS / "buffer_size_kb").read_text().strip()) == size_kb:
+        return
+    (TRACEFS / "buffer_size_kb").write_text(f"{size_kb}\n")
+
 def parse_marker_bytes(line: str) -> bytes:
     i = line.find("bytes=")
     if i < 0:
@@ -107,6 +112,7 @@ def default_reset_state() -> FuzzerState:
 
     st.current_op = START
     st.fetch_counter = 0
+    st.per_instruction_counter = 0
     st.file_open = False
 
     return st
@@ -459,6 +465,23 @@ def main() -> int:
         return 1
 
     state_path = Path(args.state_file)
+
+    try:
+        #set size before enabling events to avoid losing initial traces due to small buffer
+        set_tracing_buffer_size(262144 * 2)
+        with open(TRACE_PIPE, "r") as f:
+            while True:
+                r, _, _ = select.select([f], [], [], 0.25)
+                if not r:
+                    break
+                line = f.readline()
+                if not line:
+                    break
+                
+    except Exception as e:
+        print(f"Failed to set tracing buffer size or read trace: {e}", file=sys.stderr)
+        os.close(dev_fd)
+        return 1
 
     try:
         if args.resume:
