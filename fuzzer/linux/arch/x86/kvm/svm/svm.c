@@ -2240,6 +2240,8 @@ static void setup_fuzzer(struct kvm_vcpu *vcpu)
 	fuzz_state.fetch_counter = 0;
 	fuzz_state.per_instruction_counter = 0;
 	fuzz_state.file_open = false;
+
+	ibs_log_close();
 }
 
 static void fetch_microop(int exit_code, struct kvm_vcpu *vcpu)
