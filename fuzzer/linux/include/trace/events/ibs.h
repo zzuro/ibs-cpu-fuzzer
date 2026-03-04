@@ -51,24 +51,26 @@ TRACE_EVENT(
 				 (mem_width == 12) ? "?C" :
 				 (mem_width == 13) ? "?D" :
 				 (mem_width == 14) ? "?E" :
-				 (mem_width == 15) ? "?F" : "?";
+				 (mem_width == 15) ? "?F" :
+						     "?";
 
+		//RIP,uop_cnt,op_type,phys_addr,lin_addr,UC,WC,CacheMiss,Branch,tagToRetire,compToRetire,micro,multiOP
 		if (is_load || is_store) {
 			scnprintf(
 				__entry->msg, sizeof(__entry->msg),
-				"[RIP: 0x%016llx][uop cnt: %llu] [%6s%s] 0x%016llx (v=0x%016llx) UC[%s] WC[%s] CacheMiss [%s] tagToRetire [%4u] compToRetire [%4u]\n",
+				"0x%016llx,%llu,%s%s,0x%016llx,0x%016llx,%s,%s,%s,,%u,%u,,\n",
 				rip, uop_cnt, is_load ? "load" : "store", mw,
-				phys, lin, dc_uc_mem_acc ? "+" : "-",
-				dc_wc_mem_acc ? "+" : "-", dc_miss ? "+" : "-",
-				tag_to_ret, comp_to_ret);
+				phys, lin, dc_uc_mem_acc ? "True" : "False",
+				dc_wc_mem_acc ? "True" : "False",
+				dc_miss ? "True" : "False", tag_to_ret,
+				comp_to_ret);
 		} else {
-			scnprintf(
-				__entry->msg, sizeof(__entry->msg),
-				"[RIP: 0x%016llx][uop cnt: %llu] [%8s] Branch[%3s] tagToRetire [%4u] compToRetire [%4u] micro [%3s] multiOP [%3s]\n",
-				rip, uop_cnt, "ALU", op_brn_ret ? "yes" : "no",
-				tag_to_ret, comp_to_ret,
-				op_microcode ? "yes" : "no",
-				op_brn_fuse ? "yes" : "no");
+			scnprintf(__entry->msg, sizeof(__entry->msg),
+				  "0x%016llx,%llu,ALU,,,,,,%s,%u,%u,%s,%s\n",
+				  rip, uop_cnt, op_brn_ret ? "True" : "False",
+				  tag_to_ret, comp_to_ret,
+				  op_microcode ? "True" : "False",
+				  op_brn_fuse ? "True" : "False");
 		}),
 
 	TP_printk("%s", __entry->msg));

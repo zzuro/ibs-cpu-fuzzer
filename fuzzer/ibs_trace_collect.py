@@ -17,12 +17,7 @@ import ctypes
 import shlex
 import csv
 
-TRACEFS = Path("/sys/kernel/tracing")
-TRACE_PIPE = TRACEFS / "trace_pipe"
-
-EVENT_DIR = TRACEFS / "events" / "ibs"
-ENABLE_MARKER = EVENT_DIR / "ibs_marker" / "enable"
-ENABLE_EVENT  = EVENT_DIR / "ibs_event"  / "enable"
+# later we will want to use all CPUs
 
 LOG_DIR = Path("/mnt/home/avezzu/ibs_log")
 IBS_PREFIX = str(LOG_DIR / "ibs_")
@@ -51,6 +46,7 @@ def enable_event(enable_path: Path) -> None:
     enable_path.write_text("1\n")
 
 def set_tracing_buffer_size(size_kb: int) -> None:
+    print((TRACEFS / "buffer_size_kb").read_text().strip())
     if int((TRACEFS / "buffer_size_kb").read_text().strip()) == size_kb:
         return
     (TRACEFS / "buffer_size_kb").write_text(f"{size_kb}\n")
@@ -254,45 +250,6 @@ def to_bool(value):
     return None
 
 
-def parse_ibs_trace(line: str, writer: csv.writer) -> None:
-    pattern = re.compile(
-        r"\[RIP:\s*(?P<RIP>0x[0-9a-fA-F]+)\]"
-        r"\[uop cnt:\s*(?P<uop_cnt>\d+)\]\s+"
-        r"\[\s*(?P<op_type>\w+)\]"
-        r"(?:\s+(?P<phys_addr>0x[0-9a-fA-F]+)\s+\(v=(?P<lin_addr>0x[0-9a-fA-F]+)\))?"
-        r"(?:\s+UC\[(?P<UC>[+-])\])?"
-        r"(?:\s+WC\[(?P<WC>[+-])\])?"
-        r"(?:\s+CacheMiss\s+\[(?P<CacheMiss>[+-])\])?"
-        r"(?:\s+Branch\[\s*(?P<Branch>\w+)\])?"
-        r"\s+tagToRetire\s+\[\s*(?P<tagToRetire>\d+)\]"
-        r"\s+compToRetire\s+\[\s*(?P<compToRetire>\d+)\]"
-        r"(?:\s+micro\s+\[\s*(?P<micro>\w+)\])?"
-        r"(?:\s+multiOP\s+\[\s*(?P<multiOP>\w+)\])?"
-    )
-
-    match = pattern.search(line)
-    if not match:
-        print(f"WARN: Unrecognized trace line format: {line}", file=sys.stderr)
-        return
-    
-    data = match.groupdict()
-    writer.writerow([
-        data.get("RIP"),
-        int(data.get("uop_cnt")) if data.get("uop_cnt") else None,
-        data.get("op_type"),
-        data.get("phys_addr"),
-        data.get("lin_addr"),
-        to_bool(data.get("UC")),
-        to_bool(data.get("WC")),
-        to_bool(data.get("CacheMiss")),
-        to_bool(data.get("Branch")),
-        int(data.get("tagToRetire")) if data.get("tagToRetire") else None,
-        int(data.get("compToRetire")) if data.get("compToRetire") else None,
-        to_bool(data.get("micro")),
-        to_bool(data.get("multiOP")),
-    ])
-
-
 def log_timeout_instruction(crash_log_path: Path, insn_bytes: bytes, note: str = "trace_pipe inactivity timeout") -> None:
     crash_log_path.parent.mkdir(parents=True, exist_ok=True)
     ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
@@ -300,6 +257,7 @@ def log_timeout_instruction(crash_log_path: Path, insn_bytes: bytes, note: str =
     # one-line append
     with open(crash_log_path, "a", buffering=1) as fp:
         fp.write(f"[{ts}] {note} insn={insn_hex}\n")
+
 
 def trace_loop_with_timeout(
     device_fd: int,
@@ -316,135 +274,60 @@ def trace_loop_with_timeout(
         print(f"Failed to reset log directory: {e}", file=sys.stderr)
         return 1
 
-    try:
-        enable_event(ENABLE_EVENT)
-        enable_event(ENABLE_MARKER)
-    except PermissionError:
-        print("Need root (or permissions) to enable trace events.", file=sys.stderr)
-        return 1
-    except FileNotFoundError as e:
-        print(f"Trace event path not found: {e}", file=sys.stderr)
-        return 1
-
-    try:
-        tf = open(TRACE_PIPE, "r", buffering=1)
-    except PermissionError:
-        print("Need root (or permissions) to read trace_pipe.", file=sys.stderr)
-        return 1
-
-    state = "WAIT_START"
-    out = None
-    csv_writer = None
     current_insn = b""
     crash_log = LOG_DIR / "timeouts.log"
 
-    print(f"Reading {TRACE_PIPE} ...", file=sys.stdout)
+    print(f"Starting fuzzer... (inactivity timeout: {inactivity_timeout}s)", file=sys.stderr)
     last_activity = time.time()
 
     try:
         while True:
-            now = time.time()
+            pass
+            # now = time.time()
 
-            # inactivity timeout check, try to restart
-            if inactivity_timeout > 0 and (now - last_activity) >= inactivity_timeout:
-                print(f"TIMEOUT: no trace_pipe activity for {inactivity_timeout}s", file=sys.stderr)
-                try:
-                    log_timeout_instruction(crash_log, current_insn)
-                    print(f"Logged timeout instruction to {crash_log}", file=sys.stderr)
-                except Exception as e:
-                    print(f"WARN: failed to log timeout instruction: {e}", file=sys.stderr)
-                try:
-                    st = ioctl_get_state(device_fd)
-                    dump_state_to_file(st, on_timeout_state_path)
-                    print(f"Saved fuzz_state to {on_timeout_state_path}", file=sys.stderr)
-                except Exception as e:
-                    print(f"ERROR: failed to GET/DUMP state on timeout: {e}", file=sys.stderr)
+            # #TODO: check if new files have been created in the log directory, and update last_activity if so
 
-                if qemu_proc is not None:
-                    print("Stopping QEMU ...", file=sys.stderr)
-                    kill_qemu(qemu_proc)
+            # # inactivity timeout check, try to restart
+            # if inactivity_timeout > 0 and (now - last_activity) >= inactivity_timeout:
+            #     print(f"TIMEOUT: no trace_pipe activity for {inactivity_timeout}s", file=sys.stderr)
+            #     try:
+            #         log_timeout_instruction(crash_log, current_insn)
+            #         print(f"Logged timeout instruction to {crash_log}", file=sys.stderr)
+            #     except Exception as e:
+            #         print(f"WARN: failed to log timeout instruction: {e}", file=sys.stderr)
+            #     try:
+            #         st = ioctl_get_state(device_fd)
+            #         dump_state_to_file(st, on_timeout_state_path)
+            #         print(f"Saved fuzz_state to {on_timeout_state_path}", file=sys.stderr)
+            #     except Exception as e:
+            #         print(f"ERROR: failed to GET/DUMP state on timeout: {e}", file=sys.stderr)
 
-                try:
-                    qemu_proc = start_qemu(parse_qemu_script(qemu_script)) 
-                    print(f"Restarted QEMU (pid={qemu_proc.pid})", file=sys.stderr)
-                except Exception as e:
-                    print(f"ERROR: failed to restart QEMU: {e}", file=sys.stderr)
-                    return 2  # can't proceed without qemu
+            #     if qemu_proc is not None:
+            #         print("Stopping QEMU ...", file=sys.stderr)
+            #         kill_qemu(qemu_proc)
+
+            #     try:
+            #         qemu_proc = start_qemu(parse_qemu_script(qemu_script)) 
+            #         print(f"Restarted QEMU (pid={qemu_proc.pid})", file=sys.stderr)
+            #     except Exception as e:
+            #         print(f"ERROR: failed to restart QEMU: {e}", file=sys.stderr)
+            #         return 2  # can't proceed without qemu
                 
-                if out:
-                    try: out.close()
-                    except Exception: pass
-                out = None
-                csv_writer = None
-                current_insn = b""
-                state = "WAIT_START"
-                last_activity = time.time()
-                continue
+            #     if out:
+            #         try: out.close()
+            #         except Exception: pass
+            #     out = None
+            #     csv_writer = None
+            #     current_insn = b""
+            #     state = "WAIT_START"
+            #     last_activity = time.time()
+            #     continue
 
-    
-            # Wait for trace_pipe readability with a short poll interval
-            r, _, _ = select.select([tf], [], [], 0.25)
-            if not r:
-                continue
-
-            line = tf.readline()
-            if not line:
-                # EOF (unlikely for trace_pipe), treat as timeout-ish
-                continue
-
-            last_activity = time.time()
-            line = line.rstrip("\n")
-
-            is_marker = "ibs_marker:" in line
-            is_event = "ibs_event:" in line
-
-            if state == "WAIT_START":
-                if is_marker and "START" in line:
-                    insn = parse_marker_bytes(line)
-                    if not insn:
-                        print(f"WARN: START without parsable bytes: {line}", file=sys.stderr)
-                        continue
-                    
-                    current_insn = insn
-                    current_path = generate_filename(insn)
-                    out = open(current_path, "w", buffering=1)
-                    csv_writer = csv.writer(out)
-                    csv_writer.writerow([
-                        "RIP", "uop_cnt", "op_type", "phys_addr", "lin_addr",
-                        "UC", "WC", "CacheMiss", "Branch", "tagToRetire",
-                        "compToRetire", "micro", "multiOP"
-                    ])
-                    state = "COLLECT_EVENTS"
-                continue
-
-            if state == "COLLECT_EVENTS":
-                if is_event:
-                    if out:
-                        payload = line.split("ibs_event:", 1)[1].strip()
-                        parse_ibs_trace(payload, csv_writer)
-                elif is_marker and "FINISHED" in line:
-                    if out:
-                        out.close()
-                    out = None
-                    csv_writer = None
-                    current_insn = b""
-                    state = "WAIT_START"
-                continue
-
+            
     except KeyboardInterrupt:
         if qemu_proc is not None:
             print("Stopping QEMU ...", file=sys.stderr)
             kill_qemu(qemu_proc)
-    finally:
-        try:
-            if out:
-                out.close()
-        except Exception:
-            pass
-        try:
-            tf.close()
-        except Exception:
-            pass
 
 
 def main() -> int:
@@ -465,23 +348,6 @@ def main() -> int:
         return 1
 
     state_path = Path(args.state_file)
-
-    try:
-        #set size before enabling events to avoid losing initial traces due to small buffer
-        set_tracing_buffer_size(262144 * 2)
-        with open(TRACE_PIPE, "r") as f:
-            while True:
-                r, _, _ = select.select([f], [], [], 0.25)
-                if not r:
-                    break
-                line = f.readline()
-                if not line:
-                    break
-                
-    except Exception as e:
-        print(f"Failed to set tracing buffer size or read trace: {e}", file=sys.stderr)
-        os.close(dev_fd)
-        return 1
 
     try:
         if args.resume:
