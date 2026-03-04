@@ -5,53 +5,7 @@
 #include "svm.h"
 #include "ibs_logger.h"
 
-#define CREATE_TRACE_POINTS
-#include <trace/events/ibs.h>
-
 static struct file *ibs_log_filp;
-
-static u32 get_flag(union ibs_op_data3 opData3, union ibs_op_data opData1)
-{
-	u32 flags = 0;
-	if (opData3.ld_op)
-		flags |= IBS_F_LOAD;
-	if (opData3.st_op)
-		flags |= IBS_F_STORE;
-	if (opData3.dc_miss)
-		flags |= IBS_F_DCMISS;
-	if (opData3.dc_uc_mem_acc)
-		flags |= IBS_F_UC;
-	if (opData3.dc_wc_mem_acc)
-		flags |= IBS_F_WC;
-	if (opData1.op_brn_ret)
-		flags |= IBS_F_BRNRET;
-	if (opData1.op_microcode)
-		flags |= IBS_F_MICRO;
-	if (opData1.op_brn_fuse)
-		flags |= IBS_F_BRNFUSE;
-
-	return flags;
-}
-
-void ibs_trace_emit(u64 rip_value, u64 uop_cnt, u64 phys_addr, u64 lin_addr,
-		    union ibs_op_data3 opData3, union ibs_op_data opData1)
-{
-	trace_ibs_event(rip_value, uop_cnt, phys_addr, lin_addr,
-			opData3.op_mem_width, get_flag(opData3, opData1),
-			opData1.tag_to_ret_ctr, opData1.comp_to_ret_ctr);
-}
-
-void ibs_trace_start(insn_t *insn)
-{
-	u32 n = (insn->len < MAX_INSN_LENGTH) ? insn->len : MAX_INSN_LENGTH;
-	trace_ibs_marker("START", insn->bytes, n);
-}
-
-void ibs_trace_finished(insn_t *insn)
-{
-	u32 n = (insn->len < MAX_INSN_LENGTH) ? insn->len : MAX_INSN_LENGTH;
-	trace_ibs_marker("FINISHED", insn->bytes, n);
-}
 
 int ibs_log_open(char *ibs_log_path)
 {
@@ -65,6 +19,18 @@ int ibs_log_open(char *ibs_log_path)
 	if (IS_ERR(ibs_log_filp)) {
 		err = PTR_ERR(ibs_log_filp);
 		ibs_log_filp = NULL;
+	}else {
+		char* buf = kmalloc(512, GFP_KERNEL);
+		if (!buf) {
+			ibs_log_close();
+			return -ENOMEM;
+		}
+
+		int n = scnprintf(buf, 512, "RIP,UOP_CNT,OP_TYPE,OP_SIZE,PHYS_ADDR,LIN_ADDR,UC_MEM_ACC,WC_MEM_ACC,DC_MISS,TAG_TO_RET_CTR,COMP_TO_RET_CTR,"
+			"RAX,RBX,RCX,RDX,RSI,RDI,R8,R9,R10,R11,R12,R13,R14,R15,"
+			"RFLAGS,RSP,RBP\n");
+		ibs_log_write_line(buf, (size_t)n);
+		kfree(buf);
 	}
 
 	return err;
@@ -91,37 +57,31 @@ void ibs_log_write_line(const char *line, size_t len)
 
 void ibs_log_event(uint64_t rip_value, uint64_t uop_cnt,
 		   union ibs_op_data3 opData3, union ibs_op_data opData1,
-		   uint64_t phys_addr, uint64_t lin_addr, char **memwithStrings)
+		   uint64_t phys_addr, uint64_t lin_addr, char **memwithStrings, 
+		   uint64_t rax, uint64_t rbx, uint64_t rcx, uint64_t rdx,
+		   uint64_t rsi, uint64_t rdi, uint64_t r8, uint64_t r9,
+		   uint64_t r10, uint64_t r11, uint64_t r12, uint64_t r13, uint64_t r14, uint64_t r15,
+		   uint64_t rflags, uint64_t rsp, uint64_t rbp)
 {
-	char *buf;
-	int n;
+	
+	if (!(opData3.ld_op == 1 || opData3.st_op == 1)) return;
 
-	buf = kmalloc(512, GFP_KERNEL);
+	char * buf = kmalloc(1024, GFP_KERNEL);
 	if (!buf)
 		return;
 
-	if (opData3.ld_op == 1 || opData3.st_op == 1) {
-		n = scnprintf(
-			buf, 512,
-			"[RIP: 0x%016llx][uop cnt: %lld] [%6s%s] 0x%016llx (v=0x%016llx) "
-			"UC[%s] WC[%s] CacheMiss [%s] tagToRetire [%4d] compToRetire [%4d]\n",
+	int n = scnprintf(
+			buf, 1024,
+			"0x%llx,%llu,%s%s,0x%llx,0x%llx,%s,%s,%s,%u,%u," 
+			"0x%llx,0x%llx,0x%llx,0x%llx,0x%llx,0x%llx,0x%llx,0x%llx,"
+			"0x%llx,0x%llx,0x%llx,0x%llx,0x%llx,0x%llx,0x%llx,0x%llx,0x%llx\n",
 			rip_value, uop_cnt, opData3.ld_op ? "load" : "store",
 			memwithStrings[opData3.op_mem_width], phys_addr,
-			lin_addr, opData3.dc_wc_mem_acc ? "+" : "-",
-			opData3.dc_uc_mem_acc ? "+" : "-",
-			opData3.dc_miss ? "+" : "-", opData1.tag_to_ret_ctr,
-			opData1.comp_to_ret_ctr);
-	} else {
-		n = scnprintf(
-			buf, 512,
-			"[RIP: 0x%016llx][uop cnt: %lld] [%8s] Branch[%3s] tagToRetire [%4d] "
-			"compToRetire [%4d] micro [%3s] multiOP [%3s]\n",
-			rip_value, uop_cnt, "ALU",
-			opData1.op_brn_ret ? "yes" : "no",
-			opData1.tag_to_ret_ctr, opData1.comp_to_ret_ctr,
-			opData1.op_microcode ? "yes" : "no",
-			opData1.op_brn_fuse ? "yes" : "no");
-	}
+			lin_addr, opData3.dc_uc_mem_acc ? "True" : "False",
+			opData3.dc_wc_mem_acc ? "True" : "False",
+			opData3.dc_miss ? "True" : "False", opData1.tag_to_ret_ctr, opData1.comp_to_ret_ctr,
+			rax, rbx, rcx, rdx, rsi, rdi, r8, r9, r10, r11, r12, r13, r14, r15,
+			rflags, rsp, rbp);
 
 	ibs_log_write_line(buf, (size_t)n);
 	kfree(buf);

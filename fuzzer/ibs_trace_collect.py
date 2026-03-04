@@ -41,32 +41,23 @@ def reset_log_directory():
         shutil.rmtree(LOG_DIR)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
 
+def last_activity_time() -> float:
+    last_modified = LOG_DIR.stat().st_mtime   
+    seconds_since_modified = time.time() - last_modified
+    return seconds_since_modified
 
-def enable_event(enable_path: Path) -> None:
-    enable_path.write_text("1\n")
+def find_latest_file() -> Path:
+    latest_file = None
+    latest_mtime = 0.0
 
-def set_tracing_buffer_size(size_kb: int) -> None:
-    print((TRACEFS / "buffer_size_kb").read_text().strip())
-    if int((TRACEFS / "buffer_size_kb").read_text().strip()) == size_kb:
-        return
-    (TRACEFS / "buffer_size_kb").write_text(f"{size_kb}\n")
+    for entry in LOG_DIR.iterdir():
+        if entry.is_file() and entry.name.startswith("ibs_") and entry.name.endswith(".csv"):
+            mtime = entry.stat().st_mtime
+            if mtime > latest_mtime:
+                latest_mtime = mtime
+                latest_file = entry
 
-def parse_marker_bytes(line: str) -> bytes:
-    i = line.find("bytes=")
-    if i < 0:
-        return b""
-    tail = line[i + len("bytes="):]
-    pairs = _HEXPAIR_RE.findall(tail)
-    if not pairs:
-        return b""
-    b = bytes(int(p, 16) for p in pairs)
-    return b[:MAX_INSN_LENGTH]
-
-
-def generate_filename(insn_bytes: bytes) -> str:
-    encoded = "".join(f"\\x{b:02x}" for b in insn_bytes)
-    return f"{IBS_PREFIX}{encoded}{IBS_SUFFIX}"
-
+    return latest_file
 
 # ----------------------------
 # Helpers: device state I/O
@@ -239,16 +230,6 @@ def kill_qemu(proc: subprocess.Popen, sig=signal.SIGTERM, grace_sec: float = 2.0
 # ----------------------------
 # Main trace loop with timeout
 # ----------------------------
-def to_bool(value):
-    if value is None:
-        return None
-    value = value.strip().lower()
-    if value in ["yes", "+", "true"]:
-        return True
-    if value in ["no", "-", "false"]:
-        return False
-    return None
-
 
 def log_timeout_instruction(crash_log_path: Path, insn_bytes: bytes, note: str = "trace_pipe inactivity timeout") -> None:
     crash_log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -274,54 +255,41 @@ def trace_loop_with_timeout(
         print(f"Failed to reset log directory: {e}", file=sys.stderr)
         return 1
 
-    current_insn = b""
     crash_log = LOG_DIR / "timeouts.log"
 
     print(f"Starting fuzzer... (inactivity timeout: {inactivity_timeout}s)", file=sys.stderr)
-    last_activity = time.time()
 
     try:
         while True:
-            pass
-            # now = time.time()
 
-            # #TODO: check if new files have been created in the log directory, and update last_activity if so
+            # inactivity timeout check, try to restart
+            if last_activity_time() >= inactivity_timeout:
+                print(f"TIMEOUT: no trace_pipe activity for {inactivity_timeout}s", file=sys.stderr)
+                try:
+                    instr = find_latest_file().name[len("ibs_"):-len(".csv")]
+                    log_timeout_instruction(crash_log, instr)
+                    print(f"Logged timeout instruction to {crash_log}", file=sys.stderr)
+                except Exception as e:
+                    print(f"WARN: failed to log timeout instruction: {e}", file=sys.stderr)
+                try:
+                    st = ioctl_get_state(device_fd)
+                    dump_state_to_file(st, on_timeout_state_path)
+                    print(f"Saved fuzz_state to {on_timeout_state_path}", file=sys.stderr)
+                except Exception as e:
+                    print(f"ERROR: failed to GET/DUMP state on timeout: {e}", file=sys.stderr)
 
-            # # inactivity timeout check, try to restart
-            # if inactivity_timeout > 0 and (now - last_activity) >= inactivity_timeout:
-            #     print(f"TIMEOUT: no trace_pipe activity for {inactivity_timeout}s", file=sys.stderr)
-            #     try:
-            #         log_timeout_instruction(crash_log, current_insn)
-            #         print(f"Logged timeout instruction to {crash_log}", file=sys.stderr)
-            #     except Exception as e:
-            #         print(f"WARN: failed to log timeout instruction: {e}", file=sys.stderr)
-            #     try:
-            #         st = ioctl_get_state(device_fd)
-            #         dump_state_to_file(st, on_timeout_state_path)
-            #         print(f"Saved fuzz_state to {on_timeout_state_path}", file=sys.stderr)
-            #     except Exception as e:
-            #         print(f"ERROR: failed to GET/DUMP state on timeout: {e}", file=sys.stderr)
+                if qemu_proc is not None:
+                    print("Stopping QEMU ...", file=sys.stderr)
+                    kill_qemu(qemu_proc)
 
-            #     if qemu_proc is not None:
-            #         print("Stopping QEMU ...", file=sys.stderr)
-            #         kill_qemu(qemu_proc)
-
-            #     try:
-            #         qemu_proc = start_qemu(parse_qemu_script(qemu_script)) 
-            #         print(f"Restarted QEMU (pid={qemu_proc.pid})", file=sys.stderr)
-            #     except Exception as e:
-            #         print(f"ERROR: failed to restart QEMU: {e}", file=sys.stderr)
-            #         return 2  # can't proceed without qemu
+                try:
+                    qemu_proc = start_qemu(parse_qemu_script(qemu_script)) 
+                    print(f"Restarted QEMU (pid={qemu_proc.pid})", file=sys.stderr)
+                except Exception as e:
+                    print(f"ERROR: failed to restart QEMU: {e}", file=sys.stderr)
+                    return 2  # can't proceed without qemu
                 
-            #     if out:
-            #         try: out.close()
-            #         except Exception: pass
-            #     out = None
-            #     csv_writer = None
-            #     current_insn = b""
-            #     state = "WAIT_START"
-            #     last_activity = time.time()
-            #     continue
+                continue
 
             
     except KeyboardInterrupt:

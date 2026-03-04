@@ -1981,6 +1981,8 @@ static fuzzer_state_t fuzz_state = {
 	.file_open = false,
 };
 
+static reg_state_t saved_regs;
+
 #define TF 0x100
 extern char preamble_start, preamble_end;
 static noinline void __used preamble(void)
@@ -1997,6 +1999,31 @@ static noinline void __used preamble(void)
         : "i"(TF)
         : "memory"
     );
+}
+
+static void save_reg_state(struct kvm_vcpu *vcpu)
+{
+	saved_regs.rax = kvm_register_read(vcpu, VCPU_REGS_RAX);
+	saved_regs.rbx = kvm_register_read(vcpu, VCPU_REGS_RBX);
+	saved_regs.rcx = kvm_register_read(vcpu, VCPU_REGS_RCX);
+	saved_regs.rdx = kvm_register_read(vcpu, VCPU_REGS_RDX);
+
+	saved_regs.rsi = kvm_register_read(vcpu, VCPU_REGS_RSI);
+	saved_regs.rdi = kvm_register_read(vcpu, VCPU_REGS_RDI);
+
+	saved_regs.r8  = kvm_register_read(vcpu, VCPU_REGS_R8);
+	saved_regs.r9  = kvm_register_read(vcpu, VCPU_REGS_R9);
+	saved_regs.r10 = kvm_register_read(vcpu, VCPU_REGS_R10);
+	saved_regs.r11 = kvm_register_read(vcpu, VCPU_REGS_R11);
+	saved_regs.r12 = kvm_register_read(vcpu, VCPU_REGS_R12);
+	saved_regs.r13 = kvm_register_read(vcpu, VCPU_REGS_R13);
+	saved_regs.r14 = kvm_register_read(vcpu, VCPU_REGS_R14);
+	saved_regs.r15 = kvm_register_read(vcpu, VCPU_REGS_R15);
+
+	saved_regs.rbp = kvm_register_read(vcpu, VCPU_REGS_RBP);
+	saved_regs.rsp = kvm_register_read(vcpu, VCPU_REGS_RSP);
+
+	saved_regs.rflags = kvm_get_rflags(vcpu);
 }
 
 static void write_instr(struct kvm_vcpu *vcpu)
@@ -2274,13 +2301,14 @@ static int pf_interception(struct kvm_vcpu *vcpu)
 			write_instr(vcpu);
 			reset_state(vcpu);
 		}else{
-			pr_info("[Fuzzer] Instruction length exceeded max limit, moving to next instruction\n");
 			move_next_instruction(); // MAX reached, search for next instruction to fuzz
 			write_instr(vcpu);
 			reset_state(vcpu);
 		}
 	}else{
-		fetch_microop(PF_VECTOR, vcpu); //page fault issued by instruction itself
+		move_next_instruction(); //page fault issued by instruction itself, won't see intresting loads/stores
+		write_instr(vcpu);
+		reset_state(vcpu);
 	}
 	return 1;
 }
@@ -2319,6 +2347,7 @@ static int npf_interception(struct kvm_vcpu *vcpu)
 
 static int db_interception(struct kvm_vcpu *vcpu)
 {
+	save_reg_state(vcpu);
 	fetch_microop(DB_VECTOR, vcpu);
 	return 1;
 }
@@ -2605,7 +2634,9 @@ static int __maybe_unused emulate_svm_instr(struct kvm_vcpu *vcpu, int opcode)
  */
 static int gp_interception(struct kvm_vcpu *vcpu)
 {
-	fetch_microop(GP_VECTOR, vcpu);
+	move_next_instruction(); //general protection fault issued by instruction itself, won't see intresting loads/stores
+	write_instr(vcpu);
+	reset_state(vcpu);
 	return 1;
 }
 
@@ -4573,7 +4604,7 @@ static void __maybe_unused write_ibs_ctrl(u64 instruction_offset)
 
 
 
-static void __maybe_unused read_ibs_ctrl(u64 uop_cnt)
+static void __maybe_unused read_ibs_ctrl(u64 uop_cnt) 
 {
 	union ibs_op_ctl ibs_op_ctl_data;
 	ibs_op_ctl_data.val = __read_msr(IBS_OP_CTL);
@@ -4593,7 +4624,10 @@ static void __maybe_unused read_ibs_ctrl(u64 uop_cnt)
 	//u64 branch_target_rip = __read_msr(BP_IBSTGT_RIP);
 
 	if (fuzz_state.current_op == MICROOP && fuzz_state.file_open) {
-		ibs_log_event(rip_value, uop_cnt, opData3, opData1, phys_addr, lin_addr, memwithStrings);
+		ibs_log_event(rip_value, uop_cnt, opData3, opData1, phys_addr, lin_addr, memwithStrings,
+		saved_regs.rax, saved_regs.rbx, saved_regs.rcx, saved_regs.rdx, saved_regs.rsi, saved_regs.rdi,
+		saved_regs.r8, saved_regs.r9, saved_regs.r10, saved_regs.r11, saved_regs.r12, saved_regs.r13, saved_regs.r14, saved_regs.r15,
+		saved_regs.rflags, saved_regs.rsp, saved_regs.rbp);
 	}
 
 	ibs_op_ctl_data.val = 0;
