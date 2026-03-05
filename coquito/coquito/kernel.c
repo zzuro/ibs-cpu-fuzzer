@@ -83,71 +83,102 @@ void __attribute__((noreturn)) kernel_main(void)
 
     serial_puts("Building page table...");
 
-    /*
-        Set up another page table that will do identity paging
-        Paging layout:
-            - 1st page of paging_space occupied by a PML4
-                - All entries but the first one not present
-            - 2nd page of paging_space occupied by a PDP
-                - All entries but the first four ones not present
-            - Pages 3 to 6 (inclusive) occupied by last-level PD
-                - All entries filled
-                - Mapping 2MiB per entry times 512 entries per page times 4 pages
-                    => 4 GiB
+    
+    // pd alias to map VA >= 4Gib to 0x00400000
+    paging__pd_t *alias_pd = &paging_space[7].pd;
+    for (u32 i = 0; i < 512; i++)
+    {
+        paging__pd_entry_t *e = &alias_pd->pd_entries[i];
 
-        Since we're currently using identity mapping paging, the PHSYSICAL addres
-        we're writing in the *_base_address is also the (current) VIRTUAL address
-    */
+        e->present = 1;
+        e->read_write = 1;
+        e->user_supervisor = 0;
+        e->write_through = 0;
+        e->cache_disable = 0;
+        e->accessed = 1;
 
-    // Setup the PML4
+        e->page_size = 1;   
+        e->ignored_1 = 1;
+        e->reserved = 0;    
+        e->xd = 0;
+
+        e->pt_base_address = (0x00400000ULL >> 12);
+    }
+
+    // pdp alias to map VA >= 4Gib to 0x00400000
+    paging__pdp_t *pdpt_alias = &paging_space[8].pdp;
     for (u16 i = 0; i < 512; i++)
     {
-        paging__pml4_entry_t *cur_entry = paging_space[0].pml4.pml4_entries + i;
+        paging__pdp_entry_t *e = &pdpt_alias->pdp_entries[i];
+
+        e->present = 1;
+        e->read_write = 1;
+        e->user_supervisor = 0;
+        e->write_through = 0;
+        e->cache_disable = 0;
+        e->accessed = 1;
+        e->page_size = 0; 
+        e->xd = 0;
+        e->reserved = 0;
+
+        e->pd_base_address = ((u64)alias_pd) >> 12;
+    }
+
+    paging__pdp_t *pdpt_low = &paging_space[1].pdp;
+    for (u16 i = 0; i < 512; i++)
+    {
+        paging__pdp_entry_t *e = &pdpt_low->pdp_entries[i];
+
+        e->present = 1;
+        e->read_write = 1;
+        e->user_supervisor = 0;
+        e->write_through = 0;
+        e->cache_disable = 0;
+        e->accessed = 1;
+        e->page_size = 0; 
+        e->xd = 0;
+        e->reserved = 0;
+
+        if (i < 4)
+        {
+            // 0..4GiB-1: linearly mapped
+            e->pd_base_address = ((u64)(&paging_space[2 + i].pd)) >> 12;
+        }
+        else
+        {
+            // >=4GiB (within PML4[0]'s 512GiB window): alias
+            e->pd_base_address = ((u64)alias_pd) >> 12;
+        }
+    }
+
+
+    // Setup the PML4
+    paging__pml4_t *pml4 = &paging_space[0].pml4;
+    for (u16 i = 0; i < 512; i++)
+    {
+        paging__pml4_entry_t *e = &pml4->pml4_entries[i];
+
+        e->present = 1;
+        e->read_write = 1;
+        e->user_supervisor = 0;
+        e->write_through = 0;
+        e->cache_disable = 0;
+        e->accessed = 1;
+        e->xd = 0;
+        e->reserved = 0;
 
         if (i == 0)
         {
-            cur_entry->present = 1;
-            cur_entry->read_write = 1;
-            cur_entry->user_supervisor = 0;
-            cur_entry->write_through = 0;
-            cur_entry->cache_disable = 0;
-            cur_entry->accessed = 1;
-            cur_entry->pdp_base_address = ((u64)(paging_space + 1)) >> 12;
-            cur_entry->xd = 0;
-            cur_entry->reserved = 0; // Set encryption bit
+            // VA range 0..512GiB-1: keep first 4GiB "normal", rest aliased
+            e->pdp_base_address = ((u64)pdpt_low) >> 12;
         }
         else
         {
-            cur_entry->present = 0;
+            // Any address in these PML4 slots is already >512GiB, hence >4GiB -> alias it all
+            e->pdp_base_address = ((u64)pdpt_alias) >> 12;
         }
     }
 
-    // Setup the PDP with four valid entries
-    // For testing, we duplicate the mapping so that
-    // if va is a virtual address under 4GiB and PA(va) is its physical address,
-    // then PA(va) = PA(va + 4GiB)
-    for (u16 i = 0; i < 512; i++)
-    {
-        paging__pdp_entry_t *cur_entry = paging_space[1].pdp.pdp_entries + i;
-
-        if (i < 8)
-        {
-            cur_entry->present = 1;
-            cur_entry->read_write = 1;
-            cur_entry->user_supervisor = 0;
-            cur_entry->write_through = 0;
-            cur_entry->cache_disable = 0;
-            cur_entry->accessed = 1;
-            cur_entry->page_size = 0;
-            cur_entry->pd_base_address = ((u64)(paging_space + 2 + (i % 4))) >> 12;
-            cur_entry->xd = 0;
-            cur_entry->reserved = 0;
-        }
-        else
-        {
-            cur_entry->present = 0;
-        }
-    }
 
     // Setup the four PDs (each filled with valid entries)
     for (u32 pd_index = 0; pd_index < 4; pd_index++)
@@ -165,10 +196,10 @@ void __attribute__((noreturn)) kernel_main(void)
             cur_entry->page_size = 1; // Leaf page in the page table walk
             cur_entry->ignored_1 = 1; // Copy the bootloader behavior
             cur_entry->reserved = 0;  // Set encryption bit
+            cur_entry->xd = 0;
 
             // Map each 2MiB chunk of memory linearily
             cur_entry->pt_base_address = (i + ((pd_index) * 512)) << 9; // 21 - 12 = 9
-            cur_entry->xd = 0;
         }
     }
 
@@ -226,6 +257,7 @@ void __attribute__((noreturn)) kernel_main(void)
     
     paging__pt_entry_t *pte_300 = &pt->pt_entries[256]; // address 0x300000
     paging__pt_entry_t *pte_301 = &pt->pt_entries[257]; // address 0x301000
+
 
     pte_300->xd = 0; // Mark the page as executable
     pte_301->xd = 1; // Mark the page as non-executable

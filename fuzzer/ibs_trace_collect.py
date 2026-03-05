@@ -24,9 +24,7 @@ IBS_PREFIX = str(LOG_DIR / "ibs_")
 IBS_SUFFIX = ".csv"
 
 DEVICE_NAME = "/dev/svm_ibs_dev"
-
 MAX_INSN_LENGTH = 15
-_HEXPAIR_RE = re.compile(r"([0-9a-fA-F]{2})")
 
 
 FUZZ_IOC_GET_STATE = _IOR(ord('a'), ord('c'), FuzzerState)  # _IOR('a','c', fuzzer_state_t)
