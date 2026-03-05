@@ -40,7 +40,9 @@ typedef struct fuzzer_state {
 	uint8_t* fuzz_mem2_guest;
 
 	range_t total_range;
-	inj_t inj;
+	range_t search_range[64]; // support up to 64 cpus
+	insn_t range_marker;
+	inj_t inj[64];			  // support up to 64 cpus
 	result_t result;
 
 	fuzzing_op current_op;

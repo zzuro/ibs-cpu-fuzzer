@@ -1941,6 +1941,10 @@ static void svm_set_dr7(struct kvm_vcpu *vcpu, unsigned long value)
 #define PER_INSTRUCTION_COUNTER 10
 
 static uint64_t hpa_mapping[GUEST_PHYS_PAGE_SIZE];
+static DEFINE_MUTEX(fuzz_mutex);
+
+//number of base instruction bytes in each sub range
+#define RANGE_BYTES 8
 
 static fuzzer_state_t fuzz_state = {
 	.fuzz_mem1_host  = NULL,
@@ -2181,35 +2185,117 @@ static void reset_state(struct kvm_vcpu *vcpu)
 	vmcb_mark_all_dirty(to_svm(vcpu)->vmcb);
 }
 
-static void move_next_instruction(void)
+static void zero_insn_end(insn_t* insn, int marker)
 {
-    if (fuzz_state.result.length != fuzz_state.inj.last_len && fuzz_state.inj.index < fuzz_state.result.length - 1) {
-		fuzz_state.inj.index++; 
+	int i;
+	for (i=marker; i<MAX_INSN_LENGTH; i++) {
+		insn->bytes[i]=0;
 	}
-
-    fuzz_state.inj.last_len = fuzz_state.result.length;
-    fuzz_state.inj.i.bytes[fuzz_state.inj.index]++; 
-
-    while (fuzz_state.inj.index >= 0 && fuzz_state.inj.i.bytes[fuzz_state.inj.index] == 0)
-    {
-        fuzz_state.inj.index--;
-        if (fuzz_state.inj.index >= 0)
-        {
-            fuzz_state.inj.i.bytes[fuzz_state.inj.index]++;
-        }
-        fuzz_state.inj.last_len = -1;
-    }
-
-	//when generating new instruction, we need to reset the length
-	fuzz_state.inj.i.len = 1;
 }
 
-static void init_inj(void)
+static bool increment_range(insn_t* insn, int marker)
 {
-	fuzz_state.inj.i = fuzz_state.total_range.start;
-	fuzz_state.inj.i.len = 1;
-	fuzz_state.inj.last_len = -1;
-	fuzz_state.inj.index = 0;
+	int i = marker - 1;
+	zero_insn_end(insn, marker);
+
+	if (i>=0) {
+		insn->bytes[i]++;
+		while (insn->bytes[i]==0) {
+			i--;
+			if (i<0) {
+				break;
+			}
+			insn->bytes[i]++;
+		}
+	}
+
+	insn->len=marker;
+	return i>=0;
+}
+
+static void copy_instr(insn_t* dst, insn_t* src)
+{
+	memcpy(dst->bytes, src->bytes, sizeof(src->bytes));
+	dst->len = src->len;
+}
+
+static void init_inj(insn_t* new_insn, inj_t* inj)
+{
+	copy_instr(&inj->i, new_insn);
+	inj->last_len = -1;
+	inj->index = -1;
+}
+
+
+static bool move_next_range(range_t* search_range)
+{
+	bool result = true;
+	mutex_lock(&fuzz_mutex);
+	search_range->started = false;
+	if(memcmp(fuzz_state.range_marker.bytes, fuzz_state.total_range.end.bytes, sizeof(fuzz_state.range_marker.bytes))==0)
+	{
+		result = false;
+	}
+	else
+	{
+		
+		copy_instr(&search_range->start, &fuzz_state.range_marker);
+		copy_instr(&search_range->end, &fuzz_state.total_range.end);
+
+		if(!increment_range(&fuzz_state.range_marker, RANGE_BYTES))
+		{
+			copy_instr(&search_range->end, &fuzz_state.total_range.end);
+		}else if(memcmp(fuzz_state.range_marker.bytes, fuzz_state.total_range.end.bytes, sizeof(fuzz_state.range_marker.bytes))>0)
+		{
+			copy_instr(&search_range->end, &fuzz_state.total_range.end);
+		}
+
+		copy_instr(&fuzz_state.range_marker, &search_range->start); //they might have a bug here
+		
+	}
+
+	mutex_unlock(&fuzz_mutex);
+	return result;
+}
+
+static void move_next_instruction(void)
+{
+   	preempt_disable();
+	int cpu = smp_processor_id();
+	range_t* search_range = &fuzz_state.search_range[cpu];
+	inj_t* inj = &fuzz_state.inj[cpu];
+	
+	if(!search_range->started)
+	{
+		init_inj(&search_range->start, inj);
+		inj->index = search_range->start.len;
+	}else
+	{
+		if (fuzz_state.result.length != fuzz_state.inj.last_len && fuzz_state.inj.index < fuzz_state.result.length - 1) {
+			fuzz_state.inj.index++; 
+		}
+
+    	fuzz_state.inj.last_len = fuzz_state.result.length;
+    	fuzz_state.inj.i.bytes[fuzz_state.inj.index]++; 
+
+    	while (fuzz_state.inj.index >= 0 && fuzz_state.inj.i.bytes[fuzz_state.inj.index] == 0)
+    	{
+    	    fuzz_state.inj.index--;
+    	    if (fuzz_state.inj.index >= 0)
+    	    {
+    	        fuzz_state.inj.i.bytes[fuzz_state.inj.index]++;
+    	    }
+    	    fuzz_state.inj.last_len = -1;
+    	}
+
+		//when generating new instruction, we need to reset the length
+		fuzz_state.inj.i.len = 1;
+	}
+	
+	search_range.started = true;
+
+	
+	preempt_enable();
 }
 
 
