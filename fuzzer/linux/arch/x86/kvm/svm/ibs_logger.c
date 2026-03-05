@@ -26,9 +26,10 @@ int ibs_log_open(char *ibs_log_path)
 			return -ENOMEM;
 		}
 
-		int n = scnprintf(buf, 512, "RIP,UOP_CNT,OP_TYPE,OP_SIZE,PHYS_ADDR,LIN_ADDR,UC_MEM_ACC,WC_MEM_ACC,DC_MISS,TAG_TO_RET_CTR,COMP_TO_RET_CTR,"
+		int n = scnprintf(buf, 512, "RIP,UOP_CNT,OP_TYPE,PHYS_ADDR,LIN_ADDR,UC_MEM_ACC,WC_MEM_ACC,DC_MISS,"
+			"IbsOpMicrocode,IbsOpFuse,IbsOpBrnRet,IbsOpBrnMisp,IbsOpBrnTaken,"
 			"RAX,RBX,RCX,RDX,RSI,RDI,R8,R9,R10,R11,R12,R13,R14,R15,"
-			"RFLAGS,RSP,RBP\n");
+			"RSP,RBP,RFLAGS\n");
 		ibs_log_write_line(buf, (size_t)n);
 		kfree(buf);
 	}
@@ -66,7 +67,6 @@ void ibs_log_hpa(uint64_t *hpa, size_t len)
             break;
     }
 
-    /* append correctly */
     pos = filp->f_pos;
     ret = kernel_write(filp, buf, n, &pos);
     if (ret < 0)
@@ -105,7 +105,7 @@ void ibs_log_event(uint64_t rip_value, uint64_t uop_cnt,
 		   uint64_t rflags, uint64_t rsp, uint64_t rbp)
 {
 	
-	if (!(opData3.ld_op == 1 || opData3.st_op == 1)) return;
+	if (!(opData3.ld_op == 1 || opData3.st_op == 1 || opData1.op_brn_ret)) return;
 
 	char * buf = kmalloc(1024, GFP_KERNEL);
 	if (!buf)
@@ -113,16 +113,22 @@ void ibs_log_event(uint64_t rip_value, uint64_t uop_cnt,
 
 	int n = scnprintf(
 			buf, 1024,
-			"0x%llx,%llu,%s%s,0x%llx,0x%llx,%s,%s,%s,%u,%u," 
+			"0x%llx,%llu,%s%s,0x%llx,0x%llx,%s,%s,%s," 
+			"%s,%s,%s,%s,%s,"
 			"0x%llx,0x%llx,0x%llx,0x%llx,0x%llx,0x%llx,0x%llx,0x%llx,"
 			"0x%llx,0x%llx,0x%llx,0x%llx,0x%llx,0x%llx,0x%llx,0x%llx,0x%llx\n",
-			rip_value, uop_cnt, opData3.ld_op ? "load" : "store",
-			memwithStrings[opData3.op_mem_width], phys_addr,
+			rip_value, uop_cnt, opData3.ld_op ? "load" : (opData3.st_op ? "store" : "branch"),
+			(opData3.ld_op || opData3.st_op) ? memwithStrings[opData3.op_mem_width] : "", phys_addr,
 			lin_addr, opData3.dc_uc_mem_acc ? "True" : "False",
 			opData3.dc_wc_mem_acc ? "True" : "False",
-			opData3.dc_miss ? "True" : "False", opData1.tag_to_ret_ctr, opData1.comp_to_ret_ctr,
+			opData3.dc_miss ? "True" : "False",
+			opData1.op_microcode ? "True" : "False",
+			opData1.op_brn_fuse ? "True" : "False",
+			opData1.op_brn_ret ? "True" : "False",
+			opData1.op_brn_misp ? "True" : "False",
+			opData1.op_brn_taken ? "True" : "False",
 			rax, rbx, rcx, rdx, rsi, rdi, r8, r9, r10, r11, r12, r13, r14, r15,
-			rflags, rsp, rbp);
+			rsp, rbp, rflags);
 
 	ibs_log_write_line(buf, (size_t)n);
 	kfree(buf);
