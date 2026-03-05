@@ -36,6 +36,47 @@ int ibs_log_open(char *ibs_log_path)
 	return err;
 }
 
+void ibs_log_hpa(uint64_t *hpa, size_t len)
+{
+    struct file *filp;
+    const char *path = "/mnt/home/avezzu/ibs_log/hpa_log.log";
+    char *buf;
+    size_t buf_sz = 16384; 
+    size_t n = 0;
+    loff_t pos;
+    int ret;
+
+    filp = filp_open(path, O_WRONLY | O_CREAT | O_APPEND, 0644);
+    if (IS_ERR(filp)) {
+        pr_err("Failed to open HPA log file: %s\n", path);
+        return;
+    }
+
+    buf = kmalloc(buf_sz, GFP_KERNEL);
+    if (!buf) {
+        filp_close(filp, NULL);
+        return;
+    }
+
+    for (size_t i = 0; i < len; i++) {
+        n += scnprintf(buf + n, buf_sz - n, "0x%016llx\n",
+                       (unsigned long long)hpa[i]);
+
+        if (n >= buf_sz - 32)
+            break;
+    }
+
+    /* append correctly */
+    pos = filp->f_pos;
+    ret = kernel_write(filp, buf, n, &pos);
+    if (ret < 0)
+        pr_err("kernel_write failed: %d\n", ret);
+    filp->f_pos = pos;
+
+    kfree(buf);
+    filp_close(filp, NULL);
+}
+
 void ibs_log_close(void)
 {
 	if (ibs_log_filp) {

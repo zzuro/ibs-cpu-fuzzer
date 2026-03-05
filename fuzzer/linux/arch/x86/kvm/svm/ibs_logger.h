@@ -13,6 +13,8 @@
 
 
 
+
+
 int ibs_log_open(char *ibs_log_path);
 void ibs_log_close(void);
 
@@ -26,6 +28,8 @@ void ibs_log_event(uint64_t rip_value, uint64_t uop_cnt,
 		   uint64_t rflags, uint64_t rsp, uint64_t rbp);
 
 
-char *ibs_generate_filename(const u8 *bytes, size_t len);              
+char *ibs_generate_filename(const u8 *bytes, size_t len);     
+
+void ibs_log_hpa(uint64_t* hpa, size_t len);
 
 

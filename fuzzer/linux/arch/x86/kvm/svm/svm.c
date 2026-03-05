@@ -1932,9 +1932,16 @@ static void svm_set_dr7(struct kvm_vcpu *vcpu, unsigned long value)
 	vmcb_mark_dirty(svm->vmcb, VMCB_DR);
 }
 
+#define REGISTER_VALUE 			0x4000000000 
+#define GUEST_PHYS_ADDR_START 	0x00400000 
+#define GUEST_PHYS_ADDR_END 	0x005FFFFF
+#define GUEST_PHYS_PAGE_SIZE 	((GUEST_PHYS_ADDR_END - GUEST_PHYS_ADDR_START + 1)/PAGE_SIZE)
 
 #define MAX_INSTRUCTION_COUNT 6000
 #define PER_INSTRUCTION_COUNTER 10
+
+static uint64_t hpa_mapping[GUEST_PHYS_PAGE_SIZE];
+
 static fuzzer_state_t fuzz_state = {
 	.fuzz_mem1_host  = NULL,
 	.fuzz_mem1_guest = NULL,
@@ -2026,7 +2033,29 @@ static void save_reg_state(struct kvm_vcpu *vcpu)
 	saved_regs.rflags = kvm_get_rflags(vcpu);
 }
 
-static void write_instr(struct kvm_vcpu *vcpu)
+static void set_gpr(uint64_t value, struct kvm_vcpu *vcpu)
+{
+	kvm_register_write(vcpu, VCPU_REGS_RAX, value);
+	kvm_register_write(vcpu, VCPU_REGS_RBX, value);
+	kvm_register_write(vcpu, VCPU_REGS_RCX, value);
+	kvm_register_write(vcpu, VCPU_REGS_RDX, value);
+
+	kvm_register_write(vcpu, VCPU_REGS_RSI, value);
+	kvm_register_write(vcpu, VCPU_REGS_RDI, value);
+
+	kvm_register_write(vcpu, VCPU_REGS_R8,  value);
+	kvm_register_write(vcpu, VCPU_REGS_R9,  value);
+	kvm_register_write(vcpu, VCPU_REGS_R10, value);
+	kvm_register_write(vcpu, VCPU_REGS_R11, value);
+	kvm_register_write(vcpu, VCPU_REGS_R12, value);
+	kvm_register_write(vcpu, VCPU_REGS_R13, value);
+	kvm_register_write(vcpu, VCPU_REGS_R14, value);
+	kvm_register_write(vcpu, VCPU_REGS_R15, value);
+
+	kvm_register_write(vcpu, VCPU_REGS_RBP, value);
+}
+
+static void write_instr(struct kvm_vcpu *vcpu, uint64_t value, uint64_t offset)
 {
 	uint32_t i = 0;
 	uint32_t preamble_length = (&preamble_end - &preamble_start);
@@ -2042,24 +2071,7 @@ static void write_instr(struct kvm_vcpu *vcpu)
 
     *(uint64_t*) fuzz_state.fuzz_mem1_host = (uint64_t)fuzz_state.fuzz_mem1_guest + PAGE_SIZE - fuzz_state.inj.i.len - preamble_length;
 
-	kvm_register_write(vcpu, VCPU_REGS_RAX, 0ULL);
-	kvm_register_write(vcpu, VCPU_REGS_RBX, 0ULL);
-	kvm_register_write(vcpu, VCPU_REGS_RCX, 0ULL);
-	kvm_register_write(vcpu, VCPU_REGS_RDX, 0ULL);
-
-	kvm_register_write(vcpu, VCPU_REGS_RSI, 0ULL);
-	kvm_register_write(vcpu, VCPU_REGS_RDI, 0ULL);
-
-	kvm_register_write(vcpu, VCPU_REGS_R8,  0ULL);
-	kvm_register_write(vcpu, VCPU_REGS_R9,  0ULL);
-	kvm_register_write(vcpu, VCPU_REGS_R10, 0ULL);
-	kvm_register_write(vcpu, VCPU_REGS_R11, 0ULL);
-	kvm_register_write(vcpu, VCPU_REGS_R12, 0ULL);
-	kvm_register_write(vcpu, VCPU_REGS_R13, 0ULL);
-	kvm_register_write(vcpu, VCPU_REGS_R14, 0ULL);
-	kvm_register_write(vcpu, VCPU_REGS_R15, 0ULL);
-
-	kvm_register_write(vcpu, VCPU_REGS_RBP, 0ULL);
+	set_gpr(value + offset, vcpu);
 	kvm_register_write(vcpu, VCPU_REGS_RSP, fuzz_state.saved_state.rsp); 
 }
 
@@ -2200,6 +2212,7 @@ static void init_inj(void)
 	fuzz_state.inj.index = 0;
 }
 
+
 static void setup_fuzzer(struct kvm_vcpu *vcpu)
 {
 	
@@ -2229,6 +2242,18 @@ static void setup_fuzzer(struct kvm_vcpu *vcpu)
 	
 	uint64_t rip = kvm_rip_read(vcpu);
 	kvm_rip_write(vcpu, rip + UD2_SIZE);
+
+
+	for(uint64_t i = GUEST_PHYS_ADDR_START; i <= GUEST_PHYS_ADDR_END; i += PAGE_SIZE) {
+		if (kvm_vcpu_map(vcpu, i >> PAGE_SHIFT, &map)) {
+			pr_err("[Fuzzer] Failed to map guest memory\n");
+			return;
+		}
+		
+		hpa_mapping[(i - GUEST_PHYS_ADDR_START) / PAGE_SIZE] = map.pfn << PAGE_SHIFT;
+	}
+
+	ibs_log_hpa(hpa_mapping, GUEST_PHYS_PAGE_SIZE);
 
 	//incase VM crashed we don't want to continue with the latest instruction
 	if(!fuzz_state.total_range.started) {
@@ -2265,15 +2290,16 @@ static void fetch_microop(int exit_code, struct kvm_vcpu *vcpu)
 	if(fuzz_state.current_op == MICROOP && fuzz_state.fetch_counter < MAX_INSTRUCTION_COUNT && fuzz_state.per_instruction_counter >= PER_INSTRUCTION_COUNTER) {
 		fuzz_state.fetch_counter++;
 		fuzz_state.per_instruction_counter = 0;
-		write_instr(vcpu);
+		write_instr(vcpu, REGISTER_VALUE, 0);
 		reset_state(vcpu);
 
 	}
 	else if(fuzz_state.current_op == MICROOP && fuzz_state.fetch_counter <= MAX_INSTRUCTION_COUNT && fuzz_state.per_instruction_counter < PER_INSTRUCTION_COUNTER)
 	{
-		fuzz_state.per_instruction_counter++;
-		write_instr(vcpu);
+		write_instr(vcpu, REGISTER_VALUE, fuzz_state.per_instruction_counter * 1024); //increase offset to see if it affects micro-op 
 		reset_state(vcpu);
+		save_reg_state(vcpu);
+		fuzz_state.per_instruction_counter++;
 	}
 	
 	else if(fuzz_state.current_op == MICROOP) {
@@ -2288,7 +2314,7 @@ static void fetch_microop(int exit_code, struct kvm_vcpu *vcpu)
 		fuzz_state.fetch_counter = 0;
 		fuzz_state.per_instruction_counter = 0;
 		
-		write_instr(vcpu);
+		write_instr(vcpu, REGISTER_VALUE, 0);
 		reset_state(vcpu);
 	}
 }
@@ -2300,16 +2326,16 @@ static int pf_interception(struct kvm_vcpu *vcpu)
 	if(cr2 == (uint64_t)fuzz_state.fuzz_mem2_guest) {
 		fuzz_state.inj.i.len++;
 		if(fuzz_state.inj.i.len <= MAX_INSN_LENGTH) {
-			write_instr(vcpu);
+			write_instr(vcpu, REGISTER_VALUE, 0);
 			reset_state(vcpu);
 		}else{
 			move_next_instruction(); // MAX reached, search for next instruction to fuzz
-			write_instr(vcpu);
+			write_instr(vcpu, REGISTER_VALUE, 0);
 			reset_state(vcpu);
 		}
 	}else{
 		move_next_instruction(); //page fault issued by instruction itself, won't see intresting loads/stores
-		write_instr(vcpu);
+		write_instr(vcpu, REGISTER_VALUE, 0);
 		reset_state(vcpu);
 	}
 	return 1;
@@ -2349,7 +2375,6 @@ static int npf_interception(struct kvm_vcpu *vcpu)
 
 static int db_interception(struct kvm_vcpu *vcpu)
 {
-	save_reg_state(vcpu);
 	fetch_microop(DB_VECTOR, vcpu);
 	return 1;
 }
@@ -2372,13 +2397,13 @@ static int ud_interception(struct kvm_vcpu *vcpu)
 	pr_info("[Fuzzer] UD interception, RID: 0x%llx\n", rid);
 	if (rid == MAGIC_VALUE) {
 		setup_fuzzer(vcpu);
-		write_instr(vcpu);
+		write_instr(vcpu, REGISTER_VALUE, 0);
 	}else
 	{
 		//instruction was invalid, no need to fetch micro-op
 		write_result(UD_VECTOR);
 		move_next_instruction();
-		write_instr(vcpu);
+		write_instr(vcpu, REGISTER_VALUE, 0);
 		reset_state(vcpu);
 	}
 
@@ -2637,7 +2662,7 @@ static int __maybe_unused emulate_svm_instr(struct kvm_vcpu *vcpu, int opcode)
 static int gp_interception(struct kvm_vcpu *vcpu)
 {
 	move_next_instruction(); //general protection fault issued by instruction itself, won't see intresting loads/stores
-	write_instr(vcpu);
+	write_instr(vcpu, REGISTER_VALUE, 0);
 	reset_state(vcpu);
 	return 1;
 }
