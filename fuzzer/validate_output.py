@@ -16,11 +16,15 @@ def check_csv(path):
     with open(path, newline="") as f:
         reader = csv.reader(f)
 
+        for _ in range(512):
+            next(reader)
+
         header = next(reader)
         num_cols = len(header)
         print(f"Header columns: {num_cols}")
 
-        for line_no, row in enumerate(reader, start=2):
+        #first 512 lines are HPA of VM
+        for line_no, row in enumerate(reader, start=2 + 512):
 
             if len(row) != num_cols:
                 print(f"[ERROR] Line {line_no}: wrong column count")

@@ -1938,7 +1938,7 @@ static void svm_set_dr7(struct kvm_vcpu *vcpu, unsigned long value)
 #define GUEST_PHYS_PAGE_SIZE 	((GUEST_PHYS_ADDR_END - GUEST_PHYS_ADDR_START + 1)/PAGE_SIZE)
 
 #define MAX_INSTRUCTION_COUNT 6000
-#define PER_INSTRUCTION_COUNTER 10
+#define PER_INSTRUCTION_COUNTER 5
 
 static uint64_t hpa_mapping[GUEST_PHYS_PAGE_SIZE];
 
@@ -2253,7 +2253,6 @@ static void setup_fuzzer(struct kvm_vcpu *vcpu)
 		hpa_mapping[(i - GUEST_PHYS_ADDR_START) / PAGE_SIZE] = map.pfn << PAGE_SHIFT;
 	}
 
-	ibs_log_hpa(hpa_mapping, GUEST_PHYS_PAGE_SIZE);
 
 	//incase VM crashed we don't want to continue with the latest instruction
 	if(!fuzz_state.total_range.started) {
@@ -2279,7 +2278,7 @@ static void fetch_microop(int exit_code, struct kvm_vcpu *vcpu)
 		if (!path)
 			pr_err("[Fuzzer] Failed to generate log file path\n");
 
-		int res = ibs_log_open(path);
+		int res = ibs_log_open(path, hpa_mapping, GUEST_PHYS_PAGE_SIZE);
 		if (res) {
 			pr_err("[Fuzzer] Failed to open log file\n");
 		} else {
@@ -4648,13 +4647,13 @@ static void __maybe_unused read_ibs_ctrl(u64 uop_cnt)
 	u64 lin_addr = __read_msr(IBS_DC_LIN_AD);
 	u64 phys_addr = __read_msr(IBS_DC_PHYS_AD);
 
-	//u64 branch_target_rip = __read_msr(BP_IBSTGT_RIP);
+	u64 branch_target_rip = __read_msr(BP_IBSTGT_RIP);
 
 	if (fuzz_state.current_op == MICROOP && fuzz_state.file_open) {
 		ibs_log_event(rip_value, uop_cnt, opData3, opData1, phys_addr, lin_addr, memwithStrings,
 		saved_regs.rax, saved_regs.rbx, saved_regs.rcx, saved_regs.rdx, saved_regs.rsi, saved_regs.rdi,
 		saved_regs.r8, saved_regs.r9, saved_regs.r10, saved_regs.r11, saved_regs.r12, saved_regs.r13, saved_regs.r14, saved_regs.r15,
-		saved_regs.rflags, saved_regs.rsp, saved_regs.rbp);
+		saved_regs.rflags, saved_regs.rsp, saved_regs.rbp, branch_target_rip);
 	}
 
 	ibs_op_ctl_data.val = 0;

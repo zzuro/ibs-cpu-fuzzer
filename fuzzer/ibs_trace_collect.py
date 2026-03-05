@@ -19,6 +19,7 @@ import csv
 
 # later we will want to use all CPUs
 
+SSD_DIR = Path("/mnt/home/avezzu/")
 LOG_DIR = Path("/mnt/home/avezzu/ibs_log")
 IBS_PREFIX = str(LOG_DIR / "ibs_")
 IBS_SUFFIX = ".csv"
@@ -34,6 +35,10 @@ FUZZ_IOC_SET_STATE = _IOW(ord('a'), ord('d'), FuzzerState)  # _IOW('a','d', fuzz
 # ----------------------------
 # Helpers: logging + tracing
 # ----------------------------
+
+def check_ssd_mounted() -> bool:
+    return SSD_DIR.is_dir() and os.access(SSD_DIR, os.W_OK)
+
 def reset_log_directory():
     if LOG_DIR.exists():
         shutil.rmtree(LOG_DIR)
@@ -365,5 +370,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    if not check_ssd_mounted():
+        print(f"ERROR: SSD directory {SSD_DIR} is not mounted or writable.", file=sys.stderr)
+        raise SystemExit(1)
     os.sched_setaffinity(0, {2})
     raise SystemExit(main())

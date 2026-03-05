@@ -7,7 +7,7 @@
 
 static struct file *ibs_log_filp;
 
-int ibs_log_open(char *ibs_log_path)
+int ibs_log_open(char *ibs_log_path, uint64_t *hpa, size_t len)
 {
 	int err = 0;
 	if (ibs_log_filp) {
@@ -20,6 +20,7 @@ int ibs_log_open(char *ibs_log_path)
 		err = PTR_ERR(ibs_log_filp);
 		ibs_log_filp = NULL;
 	}else {
+		ibs_log_hpa(hpa, len);
 		char* buf = kmalloc(512, GFP_KERNEL);
 		if (!buf) {
 			ibs_log_close();
@@ -27,7 +28,7 @@ int ibs_log_open(char *ibs_log_path)
 		}
 
 		int n = scnprintf(buf, 512, "RIP,UOP_CNT,OP_TYPE,PHYS_ADDR,LIN_ADDR,UC_MEM_ACC,WC_MEM_ACC,DC_MISS,"
-			"IbsOpMicrocode,IbsOpFuse,IbsOpBrnRet,IbsOpBrnMisp,IbsOpBrnTaken,"
+			"IbsOpMicrocode,IbsOpFuse,IbsOpBrnRet,IbsOpBrnMisp,IbsOpBrnTaken,BRANCH_TARGET_RIP,"
 			"RAX,RBX,RCX,RDX,RSI,RDI,R8,R9,R10,R11,R12,R13,R14,R15,"
 			"RSP,RBP,RFLAGS\n");
 		ibs_log_write_line(buf, (size_t)n);
@@ -39,23 +40,14 @@ int ibs_log_open(char *ibs_log_path)
 
 void ibs_log_hpa(uint64_t *hpa, size_t len)
 {
-    struct file *filp;
-    const char *path = "/mnt/home/avezzu/ibs_log/hpa_log.log";
     char *buf;
     size_t buf_sz = 16384; 
     size_t n = 0;
     loff_t pos;
     int ret;
 
-    filp = filp_open(path, O_WRONLY | O_CREAT | O_APPEND, 0644);
-    if (IS_ERR(filp)) {
-        pr_err("Failed to open HPA log file: %s\n", path);
-        return;
-    }
-
     buf = kmalloc(buf_sz, GFP_KERNEL);
     if (!buf) {
-        filp_close(filp, NULL);
         return;
     }
 
@@ -67,14 +59,11 @@ void ibs_log_hpa(uint64_t *hpa, size_t len)
             break;
     }
 
-    pos = filp->f_pos;
-    ret = kernel_write(filp, buf, n, &pos);
+    ret = kernel_write(ibs_log_filp, buf, n, &pos);
     if (ret < 0)
         pr_err("kernel_write failed: %d\n", ret);
-    filp->f_pos = pos;
 
     kfree(buf);
-    filp_close(filp, NULL);
 }
 
 void ibs_log_close(void)
@@ -102,7 +91,7 @@ void ibs_log_event(uint64_t rip_value, uint64_t uop_cnt,
 		   uint64_t rax, uint64_t rbx, uint64_t rcx, uint64_t rdx,
 		   uint64_t rsi, uint64_t rdi, uint64_t r8, uint64_t r9,
 		   uint64_t r10, uint64_t r11, uint64_t r12, uint64_t r13, uint64_t r14, uint64_t r15,
-		   uint64_t rflags, uint64_t rsp, uint64_t rbp)
+		   uint64_t rflags, uint64_t rsp, uint64_t rbp, uint64_t branch_target_rip)
 {
 	
 	if (!(opData3.ld_op == 1 || opData3.st_op == 1 || opData1.op_brn_ret)) return;
@@ -114,7 +103,7 @@ void ibs_log_event(uint64_t rip_value, uint64_t uop_cnt,
 	int n = scnprintf(
 			buf, 1024,
 			"0x%llx,%llu,%s%s,0x%llx,0x%llx,%s,%s,%s," 
-			"%s,%s,%s,%s,%s,"
+			"%s,%s,%s,%s,%s,0x%llx,"
 			"0x%llx,0x%llx,0x%llx,0x%llx,0x%llx,0x%llx,0x%llx,0x%llx,"
 			"0x%llx,0x%llx,0x%llx,0x%llx,0x%llx,0x%llx,0x%llx,0x%llx,0x%llx\n",
 			rip_value, uop_cnt, opData3.ld_op ? "load" : (opData3.st_op ? "store" : "branch"),
@@ -127,6 +116,7 @@ void ibs_log_event(uint64_t rip_value, uint64_t uop_cnt,
 			opData1.op_brn_ret ? "True" : "False",
 			opData1.op_brn_misp ? "True" : "False",
 			opData1.op_brn_taken ? "True" : "False",
+			opData1.op_brn_ret ? branch_target_rip : 0x0,
 			rax, rbx, rcx, rdx, rsi, rdi, r8, r9, r10, r11, r12, r13, r14, r15,
 			rsp, rbp, rflags);
 
