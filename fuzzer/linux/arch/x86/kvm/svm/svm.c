@@ -31,6 +31,7 @@
 #include <linux/string_choices.h>
 #include <linux/mutex.h>
 #include <linux/miscdevice.h>
+#include <linux/types.h>
 
 #include <asm/apic.h>
 #include <asm/msr.h>
@@ -1932,25 +1933,15 @@ static void svm_set_dr7(struct kvm_vcpu *vcpu, unsigned long value)
 	vmcb_mark_dirty(svm->vmcb, VMCB_DR);
 }
 
-#define REGISTER_VALUE 			0x4000000000 
-#define GUEST_PHYS_ADDR_START 	0x00400000 
-#define GUEST_PHYS_ADDR_END 	0x005FFFFF
-#define GUEST_PHYS_PAGE_SIZE 	((GUEST_PHYS_ADDR_END - GUEST_PHYS_ADDR_START + 1)/PAGE_SIZE)
-
 #define MAX_INSTRUCTION_COUNT 6000
 #define PER_INSTRUCTION_COUNTER 5
 
-static uint64_t hpa_mapping[GUEST_PHYS_PAGE_SIZE];
 static DEFINE_MUTEX(fuzz_mutex);
 
 //number of base instruction bytes in each sub range
-#define RANGE_BYTES 8
+#define RANGE_BYTES 15
 
-static fuzzer_state_t fuzz_state = {
-	.fuzz_mem1_host  = NULL,
-	.fuzz_mem1_guest = NULL,
-	.fuzz_mem2_host  = NULL,
-	.fuzz_mem2_guest = NULL,
+static fuzzer_state_t global_fuzz_state = {
 
 	.total_range = {
 		.start = {
@@ -1968,28 +1959,15 @@ static fuzzer_state_t fuzz_state = {
 		.started = false,
 	},
 
-	.inj = {
-		.i = {
-			.bytes = {0},
-			.len = 1,
-		},
-		.index = 0,
-		.last_len = 0,
+	.range_marker = {
+		.bytes = {0},
+		.len = 1,
 	},
 
-	.result = {
-		.valid = 0,
-		.length = 0,
-		.ecxeption = 0,
-	},
+	.cpu_state = {0},
 
-	.current_op = START,
-	.fetch_counter = 0,
-	.per_instruction_counter = 0,
+	.done = false,
 
-	.saved_state = {},
-
-	.file_open = false,
 };
 
 static reg_state_t saved_regs;
@@ -2061,28 +2039,39 @@ static void set_gpr(uint64_t value, struct kvm_vcpu *vcpu)
 
 static void write_instr(struct kvm_vcpu *vcpu, uint64_t value, uint64_t offset)
 {
+	preempt_disable();
+	int cpu = smp_processor_id();
+	cpu_state_t*fuzz_state = &global_fuzz_state.cpu_state[cpu];
+	preempt_enable();
+
+
 	uint32_t i = 0;
 	uint32_t preamble_length = (&preamble_end - &preamble_start);
-	uint8_t* start = fuzz_state.fuzz_mem1_host + PAGE_SIZE - fuzz_state.inj.i.len - preamble_length;
+	uint8_t* start = fuzz_state->fuzz_mem1_host + PAGE_SIZE - fuzz_state->inj.i.len - preamble_length;
 	
 	for(i = 0; i < preamble_length; i++) {
 		start[i] = ((uint8_t*)&preamble_start)[i];
 	}
 
-	for(i = 0; i < fuzz_state.inj.i.len && i < MAX_INSN_LENGTH; i++) {
-		start[i + preamble_length] = fuzz_state.inj.i.bytes[i];
+	for(i = 0; i < fuzz_state->inj.i.len && i < MAX_INSN_LENGTH; i++) {
+		start[i + preamble_length] = fuzz_state->inj.i.bytes[i];
 	}
 
-    *(uint64_t*) fuzz_state.fuzz_mem1_host = (uint64_t)fuzz_state.fuzz_mem1_guest + PAGE_SIZE - fuzz_state.inj.i.len - preamble_length;
+    *(uint64_t*) fuzz_state->fuzz_mem1_host = (uint64_t)fuzz_state->fuzz_mem1_guest + PAGE_SIZE - fuzz_state->inj.i.len - preamble_length;
 
 	set_gpr(value + offset, vcpu);
-	kvm_register_write(vcpu, VCPU_REGS_RSP, fuzz_state.saved_state.rsp); 
+	kvm_register_write(vcpu, VCPU_REGS_RSP, fuzz_state->saved_state.rsp);
 }
 
 static void write_result(uint8_t exit_code)
 {
-	result_t* res = &fuzz_state.result;
-	res->length = fuzz_state.inj.i.len;
+	preempt_disable();
+	int cpu = smp_processor_id();
+	cpu_state_t*fuzz_state = &global_fuzz_state.cpu_state[cpu];
+	preempt_enable();
+
+	result_t* res = &fuzz_state->result;
+	res->length = fuzz_state->inj.i.len;
 	res->ecxeption = exit_code;
 	res->valid = true;
 }
@@ -2172,7 +2161,12 @@ static void fuzz_restore_segs(struct kvm_vcpu *vcpu, struct vmcb_save_area *s)
 static void reset_state(struct kvm_vcpu *vcpu)
 {
 	
-	struct vmcb_save_area *s = &fuzz_state.saved_state;
+	preempt_disable();
+	int cpu = smp_processor_id();
+	cpu_state_t*fuzz_state = &global_fuzz_state.cpu_state[cpu];
+	preempt_enable();
+
+	struct vmcb_save_area *s = &fuzz_state->saved_state;
 	fuzz_clear_pending_events(vcpu);
 	fuzz_restore_ctrl(vcpu, s);
 	fuzz_restore_gprs(vcpu, s);
@@ -2185,32 +2179,32 @@ static void reset_state(struct kvm_vcpu *vcpu)
 	vmcb_mark_all_dirty(to_svm(vcpu)->vmcb);
 }
 
-static void zero_insn_end(insn_t* insn, int marker)
+static void zero_insn_end(insn_t *insn, int marker)
 {
 	int i;
-	for (i=marker; i<MAX_INSN_LENGTH; i++) {
-		insn->bytes[i]=0;
+	for (i = marker; i < MAX_INSN_LENGTH; i++) {
+		insn->bytes[i] = 0;
 	}
 }
 
-static bool increment_range(insn_t* insn, int marker)
+static bool increment_range(insn_t *insn, int marker)
 {
 	int i = marker - 1;
 	zero_insn_end(insn, marker);
 
-	if (i>=0) {
+	if (i >= 0) {
 		insn->bytes[i]++;
-		while (insn->bytes[i]==0) {
+		while (insn->bytes[i] == 0) {
 			i--;
-			if (i<0) {
+			if (i < 0) {
 				break;
 			}
 			insn->bytes[i]++;
 		}
 	}
 
-	insn->len=marker;
-	return i>=0;
+	insn->len = marker;
+	return i >= 0;
 }
 
 static void copy_instr(insn_t* dst, insn_t* src)
@@ -2226,85 +2220,97 @@ static void init_inj(insn_t* new_insn, inj_t* inj)
 	inj->index = -1;
 }
 
-
-static bool move_next_range(range_t* search_range)
+static bool move_next_range()
 {
 	bool result = true;
 	mutex_lock(&fuzz_mutex);
-	search_range->started = false;
-	if(memcmp(fuzz_state.range_marker.bytes, fuzz_state.total_range.end.bytes, sizeof(fuzz_state.range_marker.bytes))==0)
-	{
+
+	preempt_disable();
+	int cpu = smp_processor_id();
+	cpu_state_t *fuzz_state = &global_fuzz_state.cpu_state[cpu];
+	preempt_enable();
+
+	fuzz_state->search_range.started = false;
+	if (memcmp(global_fuzz_state.range_marker.bytes,
+		   global_fuzz_state.total_range.end.bytes,
+		   sizeof(global_fuzz_state.range_marker.bytes)) == 0) {
+		/* reached end of range */
 		result = false;
-	}
-	else
-	{
-		
-		copy_instr(&search_range->start, &fuzz_state.range_marker);
-		copy_instr(&search_range->end, &fuzz_state.total_range.end);
+	} else {
+		copy_instr(&fuzz_state->search_range.start,
+			   &global_fuzz_state.range_marker);
+		copy_instr(&fuzz_state->search_range.end,
+			   &global_fuzz_state.range_marker);
 
-		if(!increment_range(&fuzz_state.range_marker, RANGE_BYTES))
-		{
-			copy_instr(&search_range->end, &fuzz_state.total_range.end);
-		}else if(memcmp(fuzz_state.range_marker.bytes, fuzz_state.total_range.end.bytes, sizeof(fuzz_state.range_marker.bytes))>0)
-		{
-			copy_instr(&search_range->end, &fuzz_state.total_range.end);
+		if (!increment_range(&fuzz_state->search_range.end,
+				     RANGE_BYTES)) {
+			copy_instr(&fuzz_state->search_range.end,
+				   &global_fuzz_state.total_range.end);
+			global_fuzz_state.done = true;
+		} else if (global_fuzz_state.done) {
+			/* other cpu reached already the end */
+			result = false;
+		} else {
+			copy_instr(&global_fuzz_state.range_marker,
+				   &fuzz_state->search_range.end);
 		}
-
-		copy_instr(&fuzz_state.range_marker, &search_range->start); //they might have a bug here
-		
 	}
 
 	mutex_unlock(&fuzz_mutex);
 	return result;
 }
 
-static void move_next_instruction(void)
+static int move_next_instruction(void)
 {
-   	preempt_disable();
+	preempt_disable();
 	int cpu = smp_processor_id();
-	range_t* search_range = &fuzz_state.search_range[cpu];
-	inj_t* inj = &fuzz_state.inj[cpu];
-	
-	if(!search_range->started)
-	{
-		init_inj(&search_range->start, inj);
-		inj->index = search_range->start.len;
-	}else
-	{
-		if (fuzz_state.result.length != fuzz_state.inj.last_len && fuzz_state.inj.index < fuzz_state.result.length - 1) {
-			fuzz_state.inj.index++; 
+	cpu_state_t *fuzz_state = &global_fuzz_state.cpu_state[cpu];
+	preempt_enable();
+
+	if (!fuzz_state->search_range.started) {
+		init_inj(&fuzz_state->search_range.start, &fuzz_state->inj);
+		fuzz_state->inj.index = 0;
+	} else {
+		if (fuzz_state->result.length != fuzz_state->inj.last_len &&
+		    fuzz_state->inj.index < fuzz_state->result.length - 1) {
+			fuzz_state->inj.index++;
 		}
 
-    	fuzz_state.inj.last_len = fuzz_state.result.length;
-    	fuzz_state.inj.i.bytes[fuzz_state.inj.index]++; 
+		fuzz_state->inj.last_len = fuzz_state->result.length;
+		fuzz_state->inj.i.bytes[fuzz_state->inj.index]++;
 
-    	while (fuzz_state.inj.index >= 0 && fuzz_state.inj.i.bytes[fuzz_state.inj.index] == 0)
-    	{
-    	    fuzz_state.inj.index--;
-    	    if (fuzz_state.inj.index >= 0)
-    	    {
-    	        fuzz_state.inj.i.bytes[fuzz_state.inj.index]++;
-    	    }
-    	    fuzz_state.inj.last_len = -1;
-    	}
+		while (fuzz_state->inj.index >= 0 &&
+		       fuzz_state->inj.i.bytes[fuzz_state->inj.index] == 0) {
+			fuzz_state->inj.index--;
+			if (fuzz_state->inj.index >= 0) {
+				fuzz_state->inj.i.bytes[fuzz_state->inj.index]++;
+			}
+			fuzz_state->inj.last_len = -1;
+		}
 
 		//when generating new instruction, we need to reset the length
-		fuzz_state.inj.i.len = 1;
+		fuzz_state->inj.i.len = 1;
 	}
-	
-	search_range.started = true;
 
-	
-	preempt_enable();
+	if (!fuzz_state->inj.index < 0) {
+		if (!move_next_range()) {
+			return 0;
+		} else {
+			return move_next_instruction();
+		}
+	}
 }
-
 
 static void setup_fuzzer(struct kvm_vcpu *vcpu)
 {
+	preempt_disable();
+	int cpu = smp_processor_id();
+	cpu_state_t* fuzz_state = &global_fuzz_state.cpu_state[cpu];
+	preempt_enable();
 	
 	pr_info("[Fuzzer] Setting up fuzzer\n");
-	svm_copy_vmrun_state(&fuzz_state.saved_state, &to_svm(vcpu)->vmcb->save);
-	fuzz_state.saved_state.rip += UD2_SIZE; //skip UD2 instruction
+	svm_copy_vmrun_state(&fuzz_state->saved_state, &to_svm(vcpu)->vmcb->save);
+	fuzz_state->saved_state.rip += UD2_SIZE; //skip UD2 instruction
 	
 	uint64_t gpa = kvm_rax_read(vcpu);
 	struct kvm_host_map map;
@@ -2314,8 +2320,8 @@ static void setup_fuzzer(struct kvm_vcpu *vcpu)
 		pr_err("[Fuzzer] Failed to map guest memory\n");
 		return;
 	}
-	fuzz_state.fuzz_mem1_host = (uint8_t *)map.hva;
-	fuzz_state.fuzz_mem1_guest = (uint8_t *)gpa;
+	fuzz_state->fuzz_mem1_host = (uint8_t *)map.hva;
+	fuzz_state->fuzz_mem1_guest = (uint8_t *)gpa;
 
 	//non-executable page
 	if (kvm_vcpu_map(vcpu, (gpa >> PAGE_SHIFT) + 1, &map)) {
@@ -2323,8 +2329,8 @@ static void setup_fuzzer(struct kvm_vcpu *vcpu)
 		return;
 	}
 
-	fuzz_state.fuzz_mem2_host = (uint8_t *)map.hva;
-	fuzz_state.fuzz_mem2_guest = (uint8_t *)gpa + PAGE_SIZE;
+	fuzz_state->fuzz_mem2_host = (uint8_t *)map.hva;
+	fuzz_state->fuzz_mem2_guest = (uint8_t *)gpa + PAGE_SIZE;
 	
 	uint64_t rip = kvm_rip_read(vcpu);
 	kvm_rip_write(vcpu, rip + UD2_SIZE);
@@ -2336,48 +2342,59 @@ static void setup_fuzzer(struct kvm_vcpu *vcpu)
 			return;
 		}
 		
-		hpa_mapping[(i - GUEST_PHYS_ADDR_START) / PAGE_SIZE] = map.pfn << PAGE_SHIFT;
+		fuzz_state->hpa_mapping[(i - GUEST_PHYS_ADDR_START) / PAGE_SIZE] = map.pfn << PAGE_SHIFT;
 	}
 
-	//incase VM crashed we don't want to continue with the latest instruction
-	if(!fuzz_state.total_range.started) {
-		init_inj();
-		fuzz_state.total_range.started = true;
+	mutex_lock(&fuzz_mutex);
+	//this is the global state, which only needs to be initialized once
+	if(!global_fuzz_state.total_range.started) {
+		copy_instr(&global_fuzz_state.range_marker, &global_fuzz_state.total_range.start);
+		global_fuzz_state.total_range.started = true;
+		global_fuzz_state.done = false;
+
+		for(int i = 0; i < MAX_CPU_COUNT; i++) {
+			global_fuzz_state.cpu_state[i].search_range.started = false;
+		}
 	}
+	mutex_unlock(&fuzz_mutex);
 
-	fuzz_state.current_op = INSTRUCTION;
-	fuzz_state.fetch_counter = 0;
-	fuzz_state.per_instruction_counter = 0;
-	fuzz_state.file_open = false;
-
+	fuzz_state->current_op = INSTRUCTION;
+	fuzz_state->fetch_counter = 0;
+	fuzz_state->per_instruction_counter = 0;
+	fuzz_state->file_open = false;
 }
 
 static void fetch_microop(int exit_code, struct kvm_vcpu *vcpu)
 {
-	if (fuzz_state.current_op == INSTRUCTION) {
-		fuzz_state.current_op = MICROOP;
-		fuzz_state.file_open = true;
-		ibs_log_hpa(hpa_mapping, GUEST_PHYS_PAGE_SIZE, fuzz_state.inj.i.bytes, fuzz_state.inj.i.len);
+	preempt_disable();
+	int cpu = smp_processor_id();
+	cpu_state_t* fuzz_state = &global_fuzz_state.cpu_state[cpu];
+	preempt_enable();
+	
+	if (fuzz_state->current_op == INSTRUCTION) {
+		fuzz_state->current_op = MICROOP;
+		fuzz_state->file_open = true;
+		ibs_log_hpa(fuzz_state->hpa_mapping, GUEST_PHYS_PAGE_SIZE, fuzz_state->inj.i.bytes, fuzz_state->inj.i.len);
 	}
 
-	if(fuzz_state.current_op == MICROOP && fuzz_state.fetch_counter < MAX_INSTRUCTION_COUNT && fuzz_state.per_instruction_counter >= PER_INSTRUCTION_COUNTER) {
-		fuzz_state.fetch_counter++;
-		fuzz_state.per_instruction_counter = 0;
+	if(fuzz_state->current_op == MICROOP && fuzz_state->fetch_counter < MAX_INSTRUCTION_COUNT && fuzz_state->per_instruction_counter >= PER_INSTRUCTION_COUNTER) {
+		fuzz_state->fetch_counter++;
+		fuzz_state->per_instruction_counter = 0;
 		write_instr(vcpu, REGISTER_VALUE, 0);
 		reset_state(vcpu);
 
 	}
-	else if(fuzz_state.current_op == MICROOP && fuzz_state.fetch_counter <= MAX_INSTRUCTION_COUNT && fuzz_state.per_instruction_counter < PER_INSTRUCTION_COUNTER)
+	else if(fuzz_state->current_op == MICROOP && fuzz_state->fetch_counter <= MAX_INSTRUCTION_COUNT && fuzz_state->per_instruction_counter < PER_INSTRUCTION_COUNTER)
 	{
-		write_instr(vcpu, REGISTER_VALUE, fuzz_state.per_instruction_counter * 1024); //increase offset to see if it affects micro-op 
+		write_instr(vcpu, REGISTER_VALUE, fuzz_state->per_instruction_counter * 1024); //increase offset to see if it affects micro-op 
 		reset_state(vcpu);
 		save_reg_state(vcpu);
-		fuzz_state.per_instruction_counter++;
+		fuzz_state->per_instruction_counter++;
 	}
 	
-	else if(fuzz_state.current_op == MICROOP) {
+	else if(fuzz_state->current_op == MICROOP) {
 
-		fuzz_state.file_open = false;
+		fuzz_state->file_open = false;
 
 		write_result(exit_code);
 		if(!move_next_instruction())
@@ -2387,9 +2404,9 @@ static void fetch_microop(int exit_code, struct kvm_vcpu *vcpu)
 			return;
 		}
 		
-		fuzz_state.current_op = INSTRUCTION;
-		fuzz_state.fetch_counter = 0;
-		fuzz_state.per_instruction_counter = 0;
+		fuzz_state->current_op = INSTRUCTION;
+		fuzz_state->fetch_counter = 0;
+		fuzz_state->per_instruction_counter = 0;
 		
 		write_instr(vcpu, REGISTER_VALUE, 0);
 		reset_state(vcpu);

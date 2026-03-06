@@ -6,6 +6,13 @@
 #define UD2_SIZE  2
 #define MAGIC_VALUE 0x1234DEADBEEF1234ULL
 
+#define REGISTER_VALUE 			0x4000000000 
+#define GUEST_PHYS_ADDR_START 	0x00400000 
+#define GUEST_PHYS_ADDR_END 	0x005FFFFF
+#define GUEST_PHYS_PAGE_SIZE 	((GUEST_PHYS_ADDR_END - GUEST_PHYS_ADDR_START + 1)/PAGE_SIZE)
+
+#define MAX_CPU_COUNT 64
+
 typedef struct {
 	uint8_t bytes[MAX_INSN_LENGTH];
 	uint32_t len; 
@@ -32,29 +39,6 @@ typedef enum
     MICROOP
 } fuzzing_op;
 
-typedef struct fuzzer_state {
-
-	uint8_t* fuzz_mem1_host;
-	uint8_t* fuzz_mem1_guest;
-	uint8_t* fuzz_mem2_host;
-	uint8_t* fuzz_mem2_guest;
-
-	range_t total_range;
-	range_t search_range[64]; // support up to 64 cpus
-	insn_t range_marker;
-	inj_t inj[64];			  // support up to 64 cpus
-	result_t result;
-
-	fuzzing_op current_op;
-	uint64_t fetch_counter;
-	uint64_t per_instruction_counter;
-
-	struct vmcb_save_area saved_state;
-
-	bool file_open;
-
-} fuzzer_state_t; 
-
 typedef struct {
 	uint64_t rax;
 	uint64_t rbx;
@@ -74,3 +58,38 @@ typedef struct {
 	uint64_t rsp;
 	uint64_t rflags;
 } reg_state_t;
+
+typedef struct cpu_state{
+
+	uint8_t* fuzz_mem1_host;
+	uint8_t* fuzz_mem1_guest;
+	uint8_t* fuzz_mem2_host;
+	uint8_t* fuzz_mem2_guest;
+
+	inj_t inj;			 
+	result_t result;
+	range_t search_range; 
+
+	fuzzing_op current_op;
+	uint64_t fetch_counter;
+	uint64_t per_instruction_counter;
+
+	reg_state_t regs;
+	uint64_t hpa_mapping[GUEST_PHYS_PAGE_SIZE];
+
+	struct vmcb_save_area saved_state;
+
+	bool file_open;
+
+}cpu_state_t;
+
+typedef struct fuzzer_state {
+
+	range_t total_range;
+	insn_t range_marker;
+	
+	cpu_state_t cpu_state[MAX_CPU_COUNT];
+
+	bool done;
+
+} fuzzer_state_t; 
