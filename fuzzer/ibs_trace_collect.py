@@ -47,6 +47,10 @@ def reset_log_directory():
         shutil.rmtree(LOG_DIR)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
 
+def check_disk_space():
+    _, _, free = shutil.disk_usage(SSD_DIR)
+    return free >= 10 * 1024**3
+
 
 def generate_filename(insn_bytes: bytes) -> str:
     encoded = "".join(f"\\x{b:02x}" for b in insn_bytes)
@@ -435,8 +439,11 @@ def trace_loop_with_timeout(
                 print(f"WARN: malformed record with len={hdr.record_len}, skipping", file=sys.stderr)
                 continue
 
-            if hdr.record_type == IBS_REC_FINISH:
-                print("Received FINISH record, stopping trace loop.", file=sys.stderr)
+            if hdr.record_type == IBS_REC_FINISH or not check_disk_space():
+                if not check_disk_space():
+                    print(f"ERROR: disk space low, stopping trace loop to avoid corruption.", file=sys.stderr)
+                else:
+                    print("Received FINISH record, stopping trace loop.", file=sys.stderr)
                 if out is not None:
                     out.close()
                 if qemu_proc is not None:
