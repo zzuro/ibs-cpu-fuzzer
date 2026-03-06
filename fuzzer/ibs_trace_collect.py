@@ -17,8 +17,8 @@ import errno
 
 
 
-SSD_DIR = Path("/mnt/home/avezzu/")
-LOG_DIR = Path("/mnt/home/avezzu/ibs_log")
+SSD_DIR = Path("/mnt/")
+LOG_DIR = Path("/mnt/ibs_log")
 IBS_PREFIX = str(LOG_DIR / "ibs_")
 IBS_SUFFIX = ".csv"
 
@@ -494,7 +494,7 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--qemu-script", default="./../vms/qemu.sh", help="Path to qemu start script")
     ap.add_argument("--timeout", type=float, default=30.0, help="Inactivity timeout (seconds) on trace_pipe; 0 disables")
-    ap.add_argument("--state-file", default="/mnt/home/avezzu/ibs_log/fuzz_state.bin",
+    ap.add_argument("--state-file", default="/mnt/ibs_log/fuzz_state.bin",
                     help="Where to dump fuzz_state on timeout (and/or for periodic dumps)")
     ap.add_argument("--resume", action="store_true",
                     help="Resume from --state-file instead of resetting to defaults")
