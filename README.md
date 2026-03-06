@@ -1,2 +1,2 @@
 # ibs-cpu-fuzzer
-This repository contains my Master’s thesis, which is a CPU instruction fuzzer incorporating the AMD IBS feature.
+This repository contains the implementation developed as part of my Master’s thesis. The project focuses on a CPU instruction fuzzer that leverages AMD’s Instruction-Based Sampling (IBS) feature to analyze instruction behavior and uncover potential anomalies.
