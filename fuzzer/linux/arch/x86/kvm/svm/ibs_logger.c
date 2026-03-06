@@ -95,6 +95,22 @@ void ibs_log_hpa(uint64_t *hpa, size_t len, uint8_t *raw_instr, size_t raw_instr
 	}
 }
 
+void ibs_log_finish(void)
+{
+	struct ibs_record_header rec = {
+		.record_type = IBS_REC_FINISH,
+		.record_len = 0,
+		.instruction_len = 0,
+		.instruction = {0},
+	};
+
+	rec.record_len = sizeof(rec);
+	if (!ibs_chan)
+		return;
+
+	ibs_relay_write(&rec, sizeof(rec));
+}
+
 
 void ibs_log_close(void)
 {

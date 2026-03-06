@@ -434,6 +434,16 @@ def trace_loop_with_timeout(
             if hdr.record_len < HEADER_SIZE:
                 print(f"WARN: malformed record with len={hdr.record_len}, skipping", file=sys.stderr)
                 continue
+
+            if hdr.record_type == IBS_REC_FINISH:
+                print("Received FINISH record, stopping trace loop.", file=sys.stderr)
+                if out is not None:
+                    out.close()
+                if qemu_proc is not None:
+                    print("Stopping QEMU ...", file=sys.stderr)
+                    kill_qemu(qemu_proc)
+                relay_fd.close()
+                return 0
             
             if current_insn_bytes != bytes(hdr.instruction[:hdr.instruction_len]):
                 current_insn_bytes = bytes(hdr.instruction[:hdr.instruction_len])

@@ -2181,7 +2181,7 @@ static void reset_state(struct kvm_vcpu *vcpu)
 	vmcb_mark_all_dirty(to_svm(vcpu)->vmcb);
 }
 
-static void move_next_instruction(void)
+static int move_next_instruction(void)
 {
     if (fuzz_state.result.length != fuzz_state.inj.last_len && fuzz_state.inj.index < fuzz_state.result.length - 1) {
 		fuzz_state.inj.index++; 
@@ -2202,6 +2202,8 @@ static void move_next_instruction(void)
 
 	//when generating new instruction, we need to reset the length
 	fuzz_state.inj.i.len = 1;
+
+	return fuzz_state.inj.index >= 0; 
 }
 
 static void init_inj(void)
@@ -2294,7 +2296,12 @@ static void fetch_microop(int exit_code, struct kvm_vcpu *vcpu)
 		fuzz_state.file_open = false;
 
 		write_result(exit_code);
-		move_next_instruction();
+		if(!move_next_instruction())
+		{
+			pr_info("[Fuzzer] Finished fuzzing all instructions in the range\n");
+			ibs_log_finish();
+			return;
+		}
 		
 		fuzz_state.current_op = INSTRUCTION;
 		fuzz_state.fetch_counter = 0;
@@ -2315,12 +2322,23 @@ static int pf_interception(struct kvm_vcpu *vcpu)
 			write_instr(vcpu, REGISTER_VALUE, 0);
 			reset_state(vcpu);
 		}else{
-			move_next_instruction(); // MAX reached, search for next instruction to fuzz
+			
+			if(!move_next_instruction())
+			{
+				pr_info("[Fuzzer] Finished fuzzing all instructions in the range\n");
+				ibs_log_finish();
+				return 1;
+			}
 			write_instr(vcpu, REGISTER_VALUE, 0);
 			reset_state(vcpu);
 		}
 	}else{
-		move_next_instruction(); //page fault issued by instruction itself, won't see intresting loads/stores
+		if(!move_next_instruction())
+		{
+			pr_info("[Fuzzer] Finished fuzzing all instructions in the range\n");
+			ibs_log_finish();
+			return 1;
+		}
 		write_instr(vcpu, REGISTER_VALUE, 0);
 		reset_state(vcpu);
 	}
@@ -2388,7 +2406,12 @@ static int ud_interception(struct kvm_vcpu *vcpu)
 	{
 		//instruction was invalid, no need to fetch micro-op
 		write_result(UD_VECTOR);
-		move_next_instruction();
+		if(!move_next_instruction())
+		{
+			pr_info("[Fuzzer] Finished fuzzing all instructions in the range\n");
+			ibs_log_finish();
+			return 1;
+		}
 		write_instr(vcpu, REGISTER_VALUE, 0);
 		reset_state(vcpu);
 	}
@@ -2647,7 +2670,12 @@ static int __maybe_unused emulate_svm_instr(struct kvm_vcpu *vcpu, int opcode)
  */
 static int gp_interception(struct kvm_vcpu *vcpu)
 {
-	move_next_instruction(); //general protection fault issued by instruction itself, won't see intresting loads/stores
+	if(!move_next_instruction())
+	{
+		pr_info("[Fuzzer] Finished fuzzing all instructions in the range\n");
+		ibs_log_finish();
+		return 1;
+	}
 	write_instr(vcpu, REGISTER_VALUE, 0);
 	reset_state(vcpu);
 	return 1;

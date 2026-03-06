@@ -20,7 +20,8 @@
 enum ibs_record_type {
 	IBS_REC_INVALID = 1,
 	IBS_REC_HPA	= 2,     
-	IBS_REC_EVENT = 3,   
+	IBS_REC_EVENT = 3,
+	IBS_REC_FINISH = 4,   
 };
 
 /*
@@ -99,6 +100,7 @@ int ibs_log_open(void);
 void ibs_log_close(void);
 
 void ibs_log_hpa(uint64_t *hpa, size_t len, uint8_t *raw_instr, size_t raw_instr_len);
+void ibs_log_finish(void);
 
 void ibs_log_event(uint64_t rip_value, uint64_t uop_cnt,
 		   union ibs_op_data3 opData3, union ibs_op_data opData1,
