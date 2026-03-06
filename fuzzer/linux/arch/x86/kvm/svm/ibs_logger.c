@@ -1,155 +1,184 @@
 #include <linux/uaccess.h>
 #include <linux/kernel.h>
 #include <linux/slab.h>
+#include <linux/relay.h>
+#include <linux/debugfs.h>
 
 #include "svm.h"
 #include "ibs_logger.h"
 
-static struct file *ibs_log_filp;
+static struct rchan *ibs_chan;
+static struct dentry *ibs_dbg_dir;
 
-int ibs_log_open(char *ibs_log_path, uint64_t *hpa, size_t len)
+static struct dentry *ibs_create_buf_file(const char *filename,
+					  struct dentry *parent,
+					  umode_t mode,
+					  struct rchan_buf *buf,
+					  int *is_global)
 {
-	int err = 0;
-	if (ibs_log_filp) {
+	*is_global = 0;
+	return debugfs_create_file(filename, mode, parent, buf,
+				   &relay_file_operations);
+}
+
+static int ibs_remove_buf_file(struct dentry *dentry)
+{
+	debugfs_remove(dentry);
+	return 0;
+}
+
+static struct rchan_callbacks ibs_relay_callbacks = {
+	.create_buf_file = ibs_create_buf_file,
+	.remove_buf_file = ibs_remove_buf_file,
+};
+
+static __always_inline void ibs_relay_write(const void *data, size_t len)
+{
+	if (!ibs_chan || !data || !len)
+		return;
+
+	relay_write(ibs_chan, data, len);
+}
+
+int ibs_log_open(void)
+{
+	if (ibs_chan)
 		return 0;
+
+	ibs_dbg_dir = debugfs_create_dir(IBS_RELAY_DIR, NULL);
+	if (IS_ERR_OR_NULL(ibs_dbg_dir)) {
+		pr_err("ibs: failed to create debugfs dir\n");
+		ibs_dbg_dir = NULL;
+		return -ENOMEM;
 	}
 
-	ibs_log_filp =
-		filp_open(ibs_log_path, O_WRONLY | O_CREAT | O_APPEND, 0644);
-	if (IS_ERR(ibs_log_filp)) {
-		err = PTR_ERR(ibs_log_filp);
-		ibs_log_filp = NULL;
-	}else {
-		ibs_log_hpa(hpa, len);
-		char* buf = kmalloc(512, GFP_KERNEL);
-		if (!buf) {
-			ibs_log_close();
-			return -ENOMEM;
-		}
-
-		int n = scnprintf(buf, 512, "RIP,UOP_CNT,OP_TYPE,PHYS_ADDR,LIN_ADDR,UC_MEM_ACC,WC_MEM_ACC,DC_MISS,"
-			"IbsOpMicrocode,IbsOpFuse,IbsOpBrnRet,IbsOpBrnMisp,IbsOpBrnTaken,BRANCH_TARGET_RIP,"
-			"RAX,RBX,RCX,RDX,RSI,RDI,R8,R9,R10,R11,R12,R13,R14,R15,"
-			"RSP,RBP,RFLAGS\n");
-		ibs_log_write_line(buf, (size_t)n);
-		kfree(buf);
+	ibs_chan = relay_open(IBS_RELAY_BASENAME,
+			      ibs_dbg_dir,
+			      IBS_SUBBUF_SIZE,
+			      IBS_N_SUBBUFS,
+			      &ibs_relay_callbacks,
+			      NULL);
+	if (!ibs_chan) {
+		pr_err("ibs: relay_open failed\n");
+		debugfs_remove_recursive(ibs_dbg_dir);
+		ibs_dbg_dir = NULL;
+		return -ENOMEM;
 	}
 
-	return err;
+
+	pr_info("ibs: relay binary logging enabled at /sys/kernel/debug/%s/\n",
+		IBS_RELAY_DIR);
+	return 0;
 }
 
-void ibs_log_hpa(uint64_t *hpa, size_t len)
+
+void ibs_log_hpa(uint64_t *hpa, size_t len, uint8_t *raw_instr, size_t raw_instr_len)
 {
-    char *buf;
-    size_t buf_sz = 16384; 
-    size_t n = 0;
-    loff_t pos;
-    int ret;
+	size_t i;
 
-    buf = kmalloc(buf_sz, GFP_KERNEL);
-    if (!buf) {
-        return;
-    }
+	if (!ibs_chan || !hpa)
+		return;
 
-    for (size_t i = 0; i < len; i++) {
-        n += scnprintf(buf + n, buf_sz - n, "0x%016llx\n",
-                       (unsigned long long)hpa[i]);
-
-        if (n >= buf_sz - 32)
-            break;
-    }
-
-    ret = kernel_write(ibs_log_filp, buf, n, &pos);
-    if (ret < 0)
-        pr_err("kernel_write failed: %d\n", ret);
-
-    kfree(buf);
+	for (i = 0; i < len; i++) {
+		struct ibs_hpa_record rec = {
+			.hdr = {
+				.record_type = IBS_REC_HPA,
+				.record_len = 0,
+				.instruction_len = raw_instr_len,
+				.instruction = {0},
+			},
+			.hpa         = hpa[i],
+		};
+		memcpy(rec.hdr.instruction, raw_instr, raw_instr_len);
+		rec.hdr.record_len = sizeof(rec);
+		ibs_relay_write(&rec, sizeof(rec));
+	}
 }
+
 
 void ibs_log_close(void)
 {
-	if (ibs_log_filp) {
-		filp_close(ibs_log_filp, NULL);
-		ibs_log_filp = NULL;
-	}
-}
-
-void ibs_log_write_line(const char *line, size_t len)
-{
-	loff_t pos = 0;
-
-	if (!ibs_log_filp) {
-		return;
+	if (ibs_chan) {
+		relay_flush(ibs_chan);
+		relay_close(ibs_chan);
+		ibs_chan = NULL;
 	}
 
-	kernel_write(ibs_log_filp, line, len, &pos);
+	if (ibs_dbg_dir) {
+		debugfs_remove_recursive(ibs_dbg_dir);
+		ibs_dbg_dir = NULL;
+	}
 }
 
 void ibs_log_event(uint64_t rip_value, uint64_t uop_cnt,
 		   union ibs_op_data3 opData3, union ibs_op_data opData1,
-		   uint64_t phys_addr, uint64_t lin_addr, char **memwithStrings, 
+		   uint64_t phys_addr, uint64_t lin_addr,
 		   uint64_t rax, uint64_t rbx, uint64_t rcx, uint64_t rdx,
 		   uint64_t rsi, uint64_t rdi, uint64_t r8, uint64_t r9,
-		   uint64_t r10, uint64_t r11, uint64_t r12, uint64_t r13, uint64_t r14, uint64_t r15,
-		   uint64_t rflags, uint64_t rsp, uint64_t rbp, uint64_t branch_target_rip)
+		   uint64_t r10, uint64_t r11, uint64_t r12, uint64_t r13,
+		   uint64_t r14, uint64_t r15,
+		   uint64_t rflags, uint64_t rsp, uint64_t rbp,
+		   uint64_t branch_target_rip, uint8_t *raw_instr, size_t raw_instr_len)
 {
-	
-	if (!(opData3.ld_op == 1 || opData3.st_op == 1 || opData1.op_brn_ret)) return;
+	struct ibs_event_record rec;
 
-	char * buf = kmalloc(1024, GFP_KERNEL);
-	if (!buf)
+
+	if (!(opData3.ld_op == 1 || opData3.st_op == 1 || opData1.op_brn_ret))
 		return;
 
-	int n = scnprintf(
-			buf, 1024,
-			"0x%llx,%llu,%s%s,0x%llx,0x%llx,%s,%s,%s," 
-			"%s,%s,%s,%s,%s,0x%llx,"
-			"0x%llx,0x%llx,0x%llx,0x%llx,0x%llx,0x%llx,0x%llx,0x%llx,"
-			"0x%llx,0x%llx,0x%llx,0x%llx,0x%llx,0x%llx,0x%llx,0x%llx,0x%llx\n",
-			rip_value, uop_cnt, opData3.ld_op ? "load" : (opData3.st_op ? "store" : "branch"),
-			(opData3.ld_op || opData3.st_op) ? memwithStrings[opData3.op_mem_width] : "", phys_addr,
-			lin_addr, opData3.dc_uc_mem_acc ? "True" : "False",
-			opData3.dc_wc_mem_acc ? "True" : "False",
-			opData3.dc_miss ? "True" : "False",
-			opData1.op_microcode ? "True" : "False",
-			opData1.op_brn_fuse ? "True" : "False",
-			opData1.op_brn_ret ? "True" : "False",
-			opData1.op_brn_misp ? "True" : "False",
-			opData1.op_brn_taken ? "True" : "False",
-			opData1.op_brn_ret ? branch_target_rip : 0x0,
-			rax, rbx, rcx, rdx, rsi, rdi, r8, r9, r10, r11, r12, r13, r14, r15,
-			rsp, rbp, rflags);
+	if (!ibs_chan)
+		return;
 
-	ibs_log_write_line(buf, (size_t)n);
-	kfree(buf);
-}
+	memset(&rec, 0, sizeof(rec));
 
-char *ibs_generate_filename(const u8 *bytes, size_t len)
-{
-	size_t prefix_len = strlen(IBS_PREFIX);
-	size_t suffix_len = strlen(IBS_SUFFIX);
-	size_t needed;
-	size_t i;
-	char *path;
-	char *p;
+	rec.hdr.record_type = IBS_REC_EVENT;
+	rec.hdr.record_len = sizeof(rec);
+	rec.hdr.instruction_len = raw_instr_len;
+	memcpy(rec.hdr.instruction, raw_instr, raw_instr_len);
 
-	needed = prefix_len + (len * 4) + suffix_len + 1;
+	rec.rip = rip_value;
+	rec.uop_cnt = uop_cnt;
 
-	path = kmalloc(needed, GFP_KERNEL);
-	if (!path)
-		return NULL;
+	rec.phys_addr = phys_addr;
+	rec.lin_addr = lin_addr;
+	rec.branch_target_rip = opData1.op_brn_ret ? branch_target_rip : 0;
 
-	p = path;
+	rec.rax = rax;
+	rec.rbx = rbx;
+	rec.rcx = rcx;
+	rec.rdx = rdx;
+	rec.rsi = rsi;
+	rec.rdi = rdi;
+	rec.r8  = r8;
+	rec.r9  = r9;
+	rec.r10 = r10;
+	rec.r11 = r11;
+	rec.r12 = r12;
+	rec.r13 = r13;
+	rec.r14 = r14;
+	rec.r15 = r15;
+	rec.rsp = rsp;
+	rec.rbp = rbp;
+	rec.rflags = rflags;
 
-	/* Copy prefix */
-	p += scnprintf(p, needed, "%s", IBS_PREFIX);
+	if (opData3.ld_op)
+		rec.op_type = IBS_OP_LOAD;
+	else if (opData3.st_op)
+		rec.op_type = IBS_OP_STORE;
+	else
+		rec.op_type = IBS_OP_BRANCH;
 
-	/* Append encoded bytes */
-	for (i = 0; i < len; i++)
-		p += scnprintf(p, needed - (p - path), "\\x%02x", bytes[i]);
+	rec.mem_width = opData3.op_mem_width;
 
-	/* Append suffix */
-	scnprintf(p, needed - (p - path), "%s", IBS_SUFFIX);
+	rec.dc_uc_mem_acc = !!opData3.dc_uc_mem_acc;
+	rec.dc_wc_mem_acc = !!opData3.dc_wc_mem_acc;
+	rec.dc_miss       = !!opData3.dc_miss;
 
-	return path;
+	rec.op_microcode  = !!opData1.op_microcode;
+	rec.op_brn_fuse   = !!opData1.op_brn_fuse;
+	rec.op_brn_ret    = !!opData1.op_brn_ret;
+	rec.op_brn_misp   = !!opData1.op_brn_misp;
+	rec.op_brn_taken  = !!opData1.op_brn_taken;
+
+	ibs_relay_write(&rec, sizeof(rec));
 }

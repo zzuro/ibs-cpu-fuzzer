@@ -2253,7 +2253,6 @@ static void setup_fuzzer(struct kvm_vcpu *vcpu)
 		hpa_mapping[(i - GUEST_PHYS_ADDR_START) / PAGE_SIZE] = map.pfn << PAGE_SHIFT;
 	}
 
-
 	//incase VM crashed we don't want to continue with the latest instruction
 	if(!fuzz_state.total_range.started) {
 		init_inj();
@@ -2265,25 +2264,14 @@ static void setup_fuzzer(struct kvm_vcpu *vcpu)
 	fuzz_state.per_instruction_counter = 0;
 	fuzz_state.file_open = false;
 
-	ibs_log_close();
 }
 
 static void fetch_microop(int exit_code, struct kvm_vcpu *vcpu)
 {
 	if (fuzz_state.current_op == INSTRUCTION) {
 		fuzz_state.current_op = MICROOP;
-		
-		char *path = ibs_generate_filename(fuzz_state.inj.i.bytes,
-						   fuzz_state.inj.i.len);
-		if (!path)
-			pr_err("[Fuzzer] Failed to generate log file path\n");
-
-		int res = ibs_log_open(path, hpa_mapping, GUEST_PHYS_PAGE_SIZE);
-		if (res) {
-			pr_err("[Fuzzer] Failed to open log file\n");
-		} else {
-			fuzz_state.file_open = true;
-		}
+		fuzz_state.file_open = true;
+		ibs_log_hpa(hpa_mapping, GUEST_PHYS_PAGE_SIZE, fuzz_state.inj.i.bytes, fuzz_state.inj.i.len);
 	}
 
 	if(fuzz_state.current_op == MICROOP && fuzz_state.fetch_counter < MAX_INSTRUCTION_COUNT && fuzz_state.per_instruction_counter >= PER_INSTRUCTION_COUNTER) {
@@ -2303,7 +2291,6 @@ static void fetch_microop(int exit_code, struct kvm_vcpu *vcpu)
 	
 	else if(fuzz_state.current_op == MICROOP) {
 
-		ibs_log_close();
 		fuzz_state.file_open = false;
 
 		write_result(exit_code);
@@ -4650,10 +4637,10 @@ static void __maybe_unused read_ibs_ctrl(u64 uop_cnt)
 	u64 branch_target_rip = __read_msr(BP_IBSTGT_RIP);
 
 	if (fuzz_state.current_op == MICROOP && fuzz_state.file_open) {
-		ibs_log_event(rip_value, uop_cnt, opData3, opData1, phys_addr, lin_addr, memwithStrings,
+		ibs_log_event(rip_value, uop_cnt, opData3, opData1, phys_addr, lin_addr,
 		saved_regs.rax, saved_regs.rbx, saved_regs.rcx, saved_regs.rdx, saved_regs.rsi, saved_regs.rdi,
 		saved_regs.r8, saved_regs.r9, saved_regs.r10, saved_regs.r11, saved_regs.r12, saved_regs.r13, saved_regs.r14, saved_regs.r15,
-		saved_regs.rflags, saved_regs.rsp, saved_regs.rbp, branch_target_rip);
+		saved_regs.rflags, saved_regs.rsp, saved_regs.rbp, branch_target_rip, fuzz_state.inj.i.bytes, fuzz_state.inj.i.len);
 	}
 
 	ibs_op_ctl_data.val = 0;
@@ -5988,6 +5975,8 @@ static void __svm_exit(void)
 #define DEVICE_NAME "svm_ibs_dev"
 #define FUZZ_IOC_GET_STATE _IOR('a', 'c', fuzzer_state_t)
 #define FUZZ_IOC_SET_STATE _IOW('a', 'd', fuzzer_state_t)
+#define FUZZ_IOC_OPEN_LOG _IO('a', 'e')
+#define FUZZ_IOC_CLOSE_LOG _IO('a', 'f')
 
 static long fuzz_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
@@ -6002,6 +5991,14 @@ static long fuzz_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
             return -EFAULT;
 
         return 0;
+
+	case FUZZ_IOC_OPEN_LOG:
+		ibs_log_open();
+		return 0;
+
+	case FUZZ_IOC_CLOSE_LOG:
+		ibs_log_close();
+		return 0;
     default:
         return -EINVAL;
     }

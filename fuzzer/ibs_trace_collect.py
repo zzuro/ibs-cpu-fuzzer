@@ -1,23 +1,21 @@
 #!/usr/bin/env python3
-from ioctl import _ioctl, _IOR, _IOW
+from ioctl import _ioctl, _IOR, _IOW, _IO
 from fuzz_state import *
+from relayfs import *
 
 import argparse
 import os
-import re
 import sys
 import shutil
 import signal
-import struct
 import subprocess
 import time
-import select
 from pathlib import Path
 import ctypes
 import shlex
-import csv
+import errno
 
-# later we will want to use all CPUs
+
 
 SSD_DIR = Path("/mnt/home/avezzu/")
 LOG_DIR = Path("/mnt/home/avezzu/ibs_log")
@@ -27,9 +25,14 @@ IBS_SUFFIX = ".csv"
 DEVICE_NAME = "/dev/svm_ibs_dev"
 MAX_INSN_LENGTH = 15
 
+#trace is dependent on CPU
+TRACE_PATH = "/sys/kernel/debug/ibs_logger/trace2"
+POLL_SLEEP_SEC = 0.05
 
-FUZZ_IOC_GET_STATE = _IOR(ord('a'), ord('c'), FuzzerState)  # _IOR('a','c', fuzzer_state_t)
-FUZZ_IOC_SET_STATE = _IOW(ord('a'), ord('d'), FuzzerState)  # _IOW('a','d', fuzzer_state_t)
+FUZZ_IOC_GET_STATE = _IOR(ord('a'), ord('c'), FuzzerState)  
+FUZZ_IOC_SET_STATE = _IOW(ord('a'), ord('d'), FuzzerState)  
+FUZZ_IOC_OPEN_LOG = _IO(ord('a'), ord('e'))
+FUZZ_IOC_CLOSE_LOG = _IO(ord('a'), ord('f'))
 
 
 # ----------------------------
@@ -44,23 +47,122 @@ def reset_log_directory():
         shutil.rmtree(LOG_DIR)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
 
-def last_activity_time() -> float:
-    last_modified = LOG_DIR.stat().st_mtime   
-    seconds_since_modified = time.time() - last_modified
-    return seconds_since_modified
 
-def find_latest_file() -> Path:
-    latest_file = None
-    latest_mtime = 0.0
+def generate_filename(insn_bytes: bytes) -> str:
+    encoded = "".join(f"\\x{b:02x}" for b in insn_bytes)
+    return f"{IBS_PREFIX}{encoded}{IBS_SUFFIX}"
 
-    for entry in LOG_DIR.iterdir():
-        if entry.is_file() and entry.name.startswith("ibs_") and entry.name.endswith(".csv"):
-            mtime = entry.stat().st_mtime
-            if mtime > latest_mtime:
-                latest_mtime = mtime
-                latest_file = entry
 
-    return latest_file
+def op_type_to_str(op_type: int) -> str:
+    if op_type == IBS_OP_LOAD:
+        return "load"
+    if op_type == IBS_OP_STORE:
+        return "store"
+    if op_type == IBS_OP_BRANCH:
+        return "branch"
+    return "unknown"
+
+
+def read_exact_or_none(f, n: int) -> bytes | None:
+    chunks = []
+    total = 0
+
+    while total < n:
+        try:
+            chunk = f.read(n - total)
+        except OSError as e:
+            if e.errno == errno.EIO:
+                return None
+            raise
+
+        if not chunk:
+            return None
+
+        chunks.append(chunk)
+        total += len(chunk)
+
+    return b"".join(chunks)
+
+
+last_was_hpa = False
+def handle_hpa_record(rec: IbsHpaRecord, out) -> None:
+    global last_was_hpa
+    out.write(f"HPA: 0x{rec.hpa:016x}\n")
+    last_was_hpa = True
+
+def handle_event_record(rec: IbsEventRecord, out) -> None:
+    global last_was_hpa
+    if last_was_hpa:
+        out.write(",".join([
+            "rip",
+            "uop_cnt",
+            "phys_addr",
+            "lin_addr",
+            "branch_target_rip",
+            "rax",
+            "rbx",
+            "rcx",
+            "rdx",
+            "rsi",
+            "rdi",
+            "r8",
+            "r9",
+            "r10",
+            "r11",
+            "r12",
+            "r13",
+            "r14",
+            "r15",
+            "rsp",
+            "rbp",
+            "rflags",
+            "op_type",
+            "mem_width",
+            "dc_uc_mem_acc",
+            "dc_wc_mem_acc",
+            "dc_miss",
+            "op_microcode",
+            "op_brn_fuse",
+            "op_brn_ret",
+            "op_brn_misp",
+            "op_brn_taken",
+        ]) + "\n")
+
+    out.write(",".join([
+        f"0x{rec.rip:016x}",
+        str(rec.uop_cnt),
+        f"0x{rec.phys_addr:016x}",
+        f"0x{rec.lin_addr:016x}",
+        f"0x{rec.branch_target_rip:016x}",
+        f"0x{rec.rax:016x}",
+        f"0x{rec.rbx:016x}",
+        f"0x{rec.rcx:016x}",
+        f"0x{rec.rdx:016x}",
+        f"0x{rec.rsi:016x}",
+        f"0x{rec.rdi:016x}",
+        f"0x{rec.r8:016x}",
+        f"0x{rec.r9:016x}",
+        f"0x{rec.r10:016x}",
+        f"0x{rec.r11:016x}",
+        f"0x{rec.r12:016x}",
+        f"0x{rec.r13:016x}",
+        f"0x{rec.r14:016x}",
+        f"0x{rec.r15:016x}",
+        f"0x{rec.rsp:016x}",
+        f"0x{rec.rbp:016x}",
+        f"0x{rec.rflags:016x}",
+        op_type_to_str(rec.op_type),
+        memwithStrings[rec.mem_width],
+        str(rec.dc_uc_mem_acc),
+        str(rec.dc_wc_mem_acc),
+        str(rec.dc_miss),
+        str(rec.op_microcode),
+        str(rec.op_brn_fuse),
+        str(rec.op_brn_ret),
+        str(rec.op_brn_misp),
+        str(rec.op_brn_taken),
+    ]) + "\n")
+    last_was_hpa = False
 
 # ----------------------------
 # Helpers: device state I/O
@@ -83,6 +185,18 @@ def ioctl_get_state(fd: int) -> FuzzerState:
         e = ctypes.get_errno()
         raise OSError(e, f"ioctl(GET_STATE) failed: {os.strerror(e)}")
     return st
+
+def ioctl_open_log(fd: int) -> None:
+    rc = _ioctl(fd, FUZZ_IOC_OPEN_LOG, None)
+    if rc < 0:
+        e = ctypes.get_errno()
+        raise OSError(e, f"ioctl(OPEN_LOG) failed: {os.strerror(e)}")
+
+def ioctl_close_log(fd: int) -> None:
+    rc = _ioctl(fd, FUZZ_IOC_CLOSE_LOG, None)
+    if rc < 0:
+        e = ctypes.get_errno()
+        raise OSError(e, f"ioctl(CLOSE_LOG) failed: {os.strerror(e)}")
 
 
 def default_reset_state() -> FuzzerState:
@@ -258,19 +372,27 @@ def trace_loop_with_timeout(
         print(f"Failed to reset log directory: {e}", file=sys.stderr)
         return 1
 
+    ioctl_close_log(device_fd)  
+    ioctl_open_log(device_fd)
+
     crash_log = LOG_DIR / "timeouts.log"
+    relay_fd = open(TRACE_PATH, "rb", buffering=0)
+    last_received = time.monotonic()
 
     print(f"Starting fuzzer... (inactivity timeout: {inactivity_timeout}s)", file=sys.stderr)
 
+    current_insn_bytes = None
+    out = None
+
     try:
         while True:
+            now = time.monotonic()
 
             # inactivity timeout check, try to restart
-            if last_activity_time() >= inactivity_timeout:
+            if now - last_received >= inactivity_timeout:
                 print(f"TIMEOUT: no trace_pipe activity for {inactivity_timeout}s", file=sys.stderr)
                 try:
-                    instr = find_latest_file().name[len("ibs_"):-len(".csv")]
-                    log_timeout_instruction(crash_log, instr)
+                    log_timeout_instruction(crash_log, current_insn_bytes)
                     print(f"Logged timeout instruction to {crash_log}", file=sys.stderr)
                 except Exception as e:
                     print(f"WARN: failed to log timeout instruction: {e}", file=sys.stderr)
@@ -290,15 +412,72 @@ def trace_loop_with_timeout(
                     print(f"Restarted QEMU (pid={qemu_proc.pid})", file=sys.stderr)
                 except Exception as e:
                     print(f"ERROR: failed to restart QEMU: {e}", file=sys.stderr)
+                    relay_fd.close()
                     return 2  # can't proceed without qemu
                 
+                if out is not None:
+                    out.close()
+                    out = None
+
+                current_insn_bytes = None
+                last_received = time.monotonic()
                 continue
+
+
+            header_blob = read_exact_or_none(relay_fd, HEADER_SIZE)
+            if header_blob is None:
+                time.sleep(POLL_SLEEP_SEC)
+                continue
+            
+
+            hdr = IbsRecordHeader.from_buffer_copy(header_blob)
+            if hdr.record_len < HEADER_SIZE:
+                print(f"WARN: malformed record with len={hdr.record_len}, skipping", file=sys.stderr)
+                continue
+            
+            if current_insn_bytes != bytes(hdr.instruction[:hdr.instruction_len]):
+                current_insn_bytes = bytes(hdr.instruction[:hdr.instruction_len])
+                current_path = generate_filename(current_insn_bytes)
+                if out is not None:
+                    out.close()
+                out = open(current_path, "w", buffering=1)
+                
+
+            remaining = hdr.record_len - HEADER_SIZE
+            body_blob = read_exact_or_none(relay_fd, remaining)
+            if body_blob is None:
+                time.sleep(POLL_SLEEP_SEC)
+                continue
+
+            full_blob = header_blob + body_blob
+            last_received = time.monotonic()
+
+            if hdr.record_type == IBS_REC_HPA:
+                if hdr.record_len != HPA_SIZE:
+                    print(f"WARN: malformed HPA record with len={hdr.record_len}, skipping", file=sys.stderr)
+                    continue
+                rec = IbsHpaRecord.from_buffer_copy(full_blob)
+                handle_hpa_record(rec, out)
+
+            elif hdr.record_type == IBS_REC_EVENT:
+                if hdr.record_len != EVENT_SIZE:
+                    raise ValueError(
+                        f"EVENT record size mismatch: got {hdr.record_len}, expected {EVENT_SIZE}"
+                    )
+                rec = IbsEventRecord.from_buffer_copy(full_blob)
+                handle_event_record(rec, out)
+
+            else:
+                print(f"WARN: unknown record type {hdr.record_type}, skipping", file=sys.stderr)
+                continue
+
 
             
     except KeyboardInterrupt:
         if qemu_proc is not None:
             print("Stopping QEMU ...", file=sys.stderr)
             kill_qemu(qemu_proc)
+            relay_fd.close()
 
 
 def main() -> int:
@@ -373,5 +552,16 @@ if __name__ == "__main__":
     if not check_ssd_mounted():
         print(f"ERROR: SSD directory {SSD_DIR} is not mounted or writable.", file=sys.stderr)
         raise SystemExit(1)
+    
+    try:
+        subprocess.run(
+            ["sudo", "killall", "qemu-system-x86_64"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False
+        )
+    except Exception as e:
+        print(f"Warning: failed to kill existing qemu instances: {e}", file=sys.stderr)
+
     os.sched_setaffinity(0, {2})
     raise SystemExit(main())
