@@ -187,7 +187,7 @@ def ioctl_move_next_instr(fd: int) -> None:
     if rc < 0:
         e = ctypes.get_errno()
         raise OSError(e, f"ioctl(MOVE_NEXT_INSTR) failed: {os.strerror(e)}")
-
+    
 
 def default_reset_state() -> FuzzerState:
     st = FuzzerState()
@@ -210,6 +210,10 @@ def default_reset_state() -> FuzzerState:
     st.file_open = False
 
     return st
+
+def save_state(fd: int, path: Path):
+    st = ioctl_get_state(fd)
+    dump_state_to_file(st, path)
 
 def dump_state_to_file(st: FuzzerState, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -493,6 +497,8 @@ def main() -> int:
                     help="Where to dump fuzz_state on timeout (and/or for periodic dumps)")
     ap.add_argument("--resume", action="store_true",
                     help="Resume from --state-file instead of resetting to defaults")
+    ap.add_argument("--save-state",  default="/mnt/ibs_log/fuzz_state.bin",
+                    help="Where to save fuzz_state")
     args = ap.parse_args()
 
     try:
@@ -502,6 +508,16 @@ def main() -> int:
         return 1
 
     state_path = Path(args.state_file)
+
+    if args.save_state:
+        try:
+            save_state(dev_fd, Path(args.save_state))
+            print(f"Saved fuzz_state to {args.save_state}", file=sys.stderr)
+            return 0
+        except Exception as e:
+            print(f"Failed to save state: {e}", file=sys.stderr)
+            os.close(dev_fd)
+            return 1
 
     try:
         if args.resume:
