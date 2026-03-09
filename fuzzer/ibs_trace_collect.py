@@ -48,6 +48,11 @@ def reset_log_directory():
         shutil.rmtree(LOG_DIR)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
 
+def count_log_files() -> int:
+    if not LOG_DIR.exists():
+        return 0
+    return sum(1 for f in LOG_DIR.iterdir() if f.is_file())
+
 def create_log_directory_if_missing():
     if not LOG_DIR.exists():
         LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -497,8 +502,16 @@ def main() -> int:
                     help="Where to dump fuzz_state on timeout (and/or for periodic dumps)")
     ap.add_argument("--resume", action="store_true",
                     help="Resume from --state-file instead of resetting to defaults")
-    ap.add_argument("--save-state",  default="/mnt/ibs_log/fuzz_state.bin",
-                    help="Where to save fuzz_state")
+    ap.add_argument(
+        "--save-state",
+        nargs="?",
+        const="/mnt/ibs_log/fuzz_state.bin",
+        default=None,
+        help="Save fuzz state (optional path)"
+    )
+
+    ap.add_argument("--count-only", action="store_true", help="Only count records and exit (for testing)")
+
     args = ap.parse_args()
 
     try:
@@ -518,6 +531,11 @@ def main() -> int:
             print(f"Failed to save state: {e}", file=sys.stderr)
             os.close(dev_fd)
             return 1
+        
+    if args.count_only:
+        print(f"Total log files: {count_log_files()}", file=sys.stderr)
+        os.close(dev_fd)
+        return 0
 
     try:
         if args.resume:

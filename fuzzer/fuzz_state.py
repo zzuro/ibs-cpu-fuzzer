@@ -117,5 +117,3 @@ class FuzzerState(ctypes.Structure):
 
         ("file_open", ctypes.c_bool),
     ]
-
-print("FuzzerState size:", ctypes.sizeof(Range))

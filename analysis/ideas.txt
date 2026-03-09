@@ -1,14 +1,13 @@
-- Physische Adresse ausserhalb des Guest-Bereichs → evtl. Escape
-- Physische Adresse ändert sich über die 5 Runs → evtl. registerabhängige Adressberechnung
-- Gleiche lineare Adresse, aber unterschiedliche physische Adresse → evtl. registerabhängiger Zugriff / unterschiedliche Translation
-- Physische Adresse ähnelt stark einem Registerinhalt → evtl. direkte Verwendung eines Registers in der Adressberechnung
-- Branch-Adresse ändert sich über die 5 Runs → evtl. registerabhängiger Kontrollfluss
-- branch_target_rip ähnelt einem Registerinhalt → evtl. indirekter Sprung über Registerwert (intressant falls wir aus userspace in den Kernel springen)
-- Großer Unterschied zwischen Branch-Adressen → evtl. Overflow/Underflow durch Registerwert
-- Load gefolgt von Branch → möglicher datenabhängiger Kontrollfluss
-- Load gefolgt von misspredicted Branch → evtl. spekulative Ausführung abhängig vom Load
-- MSBs der physischen Adresse ändern sich → Zugriff auf unterschiedliche physische Frames / control bits
-- Gleiche physische Adresse bei Load und Store → mögliches TOCTOU-Szenario
-- dc_uc_mem_acc = 1 → evtl. Zugriff auf MMIO-Bereich / ungewöhnlicher Zugriff
-- Auffällige physische Adresse (z. B. 0x00000000, 0x6c6c6c6c, Musterwerte) → evtl. Stack-/Guest-Memory-Daten als Adresse interpretiert
-- Auffällige branch_target_rip (z. B. 0x00000000, 0x6c6c6c6c) → evtl. Stack-/Guest-Memory-Daten als Sprungziel verwendet
+- Physische Adresse ausserhalb des Guest-Bereichs: evtl. Escape
+- Physische Adresse ändert sich über die 5 Runs: evtl. registerabhängige Adressberechnung
+- Gleiche lineare Adresse, aber unterschiedliche physische Adresse: evtl. registerabhängiger Zugriff / unterschiedliche Translation
+- Physische Adresse ähnelt stark einem Registerinhalt: evtl. direkte Verwendung eines Registers in der Adressberechnung
+- Branch-Adresse ändert sich über die 5 Runs: evtl. registerabhängiger Kontrollfluss
+- branch_target_rip ähnelt einem Registerinhalt: evtl. indirekter Sprung über Registerwert (intressant falls wir aus userspace in den Kernel springen)
+- Load gefolgt von Branch: möglicher datenabhängiger Kontrollfluss
+- Load gefolgt von misspredicted Branch: evtl. spekulative Ausführung abhängig vom Load
+- MSBs der physischen Adresse ändern sich: Zugriff auf unterschiedliche physische Frames / Kontroll Bits
+- Gleiche physische Adresse bei Load und Store: mögliches TOCTOU-Szenario
+- dc_uc_mem_acc = 1: evtl. Zugriff auf MMIO-Bereich / ungewöhnlicher Zugriff
+- Auffällige physische Adresse (z. B. 0x00000000, 0x6c6c6c6c): evtl. Stack-/Guest-Memory als Adresse interpretiert
+- Auffällige branch_target_rip (z. B. 0x00000000, 0x6c6c6c6c): evtl. Stack-/Guest-Memory als Sprungziel verwendet
