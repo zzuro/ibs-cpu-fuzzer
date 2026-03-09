@@ -33,6 +33,7 @@ FUZZ_IOC_GET_STATE = _IOR(ord('a'), ord('c'), FuzzerState)
 FUZZ_IOC_SET_STATE = _IOW(ord('a'), ord('d'), FuzzerState)  
 FUZZ_IOC_OPEN_LOG = _IO(ord('a'), ord('e'))
 FUZZ_IOC_CLOSE_LOG = _IO(ord('a'), ord('f'))
+FUZZ_IOC_MOVE_NEXT_INSTR = _IO(ord('a'), ord('g'))
 
 
 # ----------------------------
@@ -46,6 +47,10 @@ def reset_log_directory():
     if LOG_DIR.exists():
         shutil.rmtree(LOG_DIR)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+def create_log_directory_if_missing():
+    if not LOG_DIR.exists():
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 def check_disk_space():
     _, _, free = shutil.disk_usage(SSD_DIR)
@@ -201,6 +206,12 @@ def ioctl_close_log(fd: int) -> None:
     if rc < 0:
         e = ctypes.get_errno()
         raise OSError(e, f"ioctl(CLOSE_LOG) failed: {os.strerror(e)}")
+    
+def ioctl_move_next_instr(fd: int) -> None:
+    rc = _ioctl(fd, FUZZ_IOC_MOVE_NEXT_INSTR, None)
+    if rc < 0:
+        e = ctypes.get_errno()
+        raise OSError(e, f"ioctl(MOVE_NEXT_INSTR) failed: {os.strerror(e)}")
 
 
 def default_reset_state() -> FuzzerState:
@@ -243,7 +254,7 @@ def load_state_from_file(path: Path) -> FuzzerState:
 def dump_fuzzer_state_pretty(st: FuzzerState) -> None:
     def insn_to_str(insn):
         b = bytes(insn.bytes[:insn.len])
-        return f"len={insn.len} bytes=" + " ".join(f"{x:02x}" for x in b)
+        return f"len={insn.len} bytes=" + " ".join(f"\\{x:02x}" for x in b)
 
     print("========== FUZZER STATE ==========")
 
@@ -257,8 +268,6 @@ def dump_fuzzer_state_pretty(st: FuzzerState) -> None:
 
     # range
     print("Total Range:")
-    print(f"  start   : {insn_to_str(st.total_range.start)}")
-    print(f"  end     : {insn_to_str(st.total_range.end)}")
     print(f"  started : {bool(st.total_range.started)}")
     print()
 
@@ -279,8 +288,7 @@ def dump_fuzzer_state_pretty(st: FuzzerState) -> None:
     # misc
     print("Execution:")
     op_map = {0: "START", 1: "INSTRUCTION", 2: "MICROOP"}
-    print(f"  current_op    : {op_map.get(st.current_op, st.current_op)}")
-    print(f"  current_length: {st.current_length}")
+    print(f"  current_op    : {op_map.get(st.current_op)}")
     print(f"  fetch_counter : {st.fetch_counter}")
     print(f"  file_open     : {bool(st.file_open)}")
     print()
@@ -394,12 +402,6 @@ def trace_loop_with_timeout(
 
             # inactivity timeout check, try to restart
             if now - last_received >= inactivity_timeout:
-                print(f"TIMEOUT: no trace_pipe activity for {inactivity_timeout}s", file=sys.stderr)
-                try:
-                    log_timeout_instruction(crash_log, current_insn_bytes)
-                    print(f"Logged timeout instruction to {crash_log}", file=sys.stderr)
-                except Exception as e:
-                    print(f"WARN: failed to log timeout instruction: {e}", file=sys.stderr)
                 try:
                     st = ioctl_get_state(device_fd)
                     dump_state_to_file(st, on_timeout_state_path)
@@ -407,9 +409,18 @@ def trace_loop_with_timeout(
                 except Exception as e:
                     print(f"ERROR: failed to GET/DUMP state on timeout: {e}", file=sys.stderr)
 
+                print(f"TIMEOUT: no trace_pipe activity for {inactivity_timeout}s", file=sys.stderr)
+                try:
+                    log_timeout_instruction(crash_log, bytes(st.inj.i.bytes[:st.inj.i.len]))
+                    print(f"Logged timeout instruction to {crash_log}", file=sys.stderr)
+                except Exception as e:
+                    print(f"WARN: failed to log timeout instruction: {e}", file=sys.stderr)
+
                 if qemu_proc is not None:
                     print("Stopping QEMU ...", file=sys.stderr)
                     kill_qemu(qemu_proc)
+                    
+                ioctl_move_next_instr(device_fd)
 
                 try:
                     qemu_proc = start_qemu(parse_qemu_script(qemu_script)) 
@@ -500,12 +511,11 @@ def trace_loop_with_timeout(
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--qemu-script", default="./../vms/qemu.sh", help="Path to qemu start script")
-    ap.add_argument("--timeout", type=float, default=30.0, help="Inactivity timeout (seconds) on trace_pipe; 0 disables")
+    ap.add_argument("--timeout", type=float, default=10.0, help="Inactivity timeout (seconds) on trace_pipe; 0 disables")
     ap.add_argument("--state-file", default="/mnt/ibs_log/fuzz_state.bin",
                     help="Where to dump fuzz_state on timeout (and/or for periodic dumps)")
     ap.add_argument("--resume", action="store_true",
                     help="Resume from --state-file instead of resetting to defaults")
-    ap.add_argument("--no-qemu", action="store_true", help="Do not start QEMU (debug)")
     args = ap.parse_args()
 
     try:
@@ -519,7 +529,9 @@ def main() -> int:
     try:
         if args.resume:
             st = load_state_from_file(state_path)
+            dump_fuzzer_state_pretty(st)
             ioctl_set_state(dev_fd, st)
+            create_log_directory_if_missing()
             print(f"Resumed fuzz_state from {state_path}", file=sys.stderr)
         else:
             st = default_reset_state()
@@ -532,15 +544,16 @@ def main() -> int:
 
     qemu_proc = None
     qemu_script = None
-    if not args.no_qemu:
-        qemu_script = Path(args.qemu_script)
-        try:
-            qemu_proc = start_qemu(parse_qemu_script(qemu_script))
-            print(f"Started QEMU via {qemu_script} (pid={qemu_proc.pid})", file=sys.stderr)
-        except Exception as e:
-            print(f"Failed to start QEMU: {e}", file=sys.stderr)
-            os.close(dev_fd)
-            return 1
+    qemu_script = Path(args.qemu_script)
+    try:
+        qemu_proc = start_qemu(parse_qemu_script(qemu_script))
+        print(f"Started QEMU via {qemu_script} (pid={qemu_proc.pid})", file=sys.stderr)
+    except Exception as e:
+        print(f"Failed to start QEMU: {e}", file=sys.stderr)
+        os.close(dev_fd)
+        return 1
+        
+        #sudo python3 ibs_trace_collect.py --resume --state-file /mnt/ibs_log_0/fuzz_state.bin
 
     rc = trace_loop_with_timeout(
         device_fd=dev_fd,

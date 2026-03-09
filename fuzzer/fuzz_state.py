@@ -7,7 +7,6 @@ INSTRUCTION = 1
 MICROOP = 2
 
 
-
 class VmcbSeg(ctypes.Structure):
     _pack_ = 1
     _fields_ = [
@@ -71,14 +70,12 @@ class VmcbSaveArea(ctypes.Structure):
     ]
 
 class Insn(ctypes.Structure):
-    _pack_ = 1
     _fields_ = [
         ("bytes", ctypes.c_uint8 * MAX_INSN_LENGTH),
         ("len",   ctypes.c_uint32),
     ]
 
 class Inj(ctypes.Structure):
-    _pack_ = 1
     _fields_ = [
         ("i", Insn),
         ("index", ctypes.c_int),
@@ -86,7 +83,6 @@ class Inj(ctypes.Structure):
     ]
 
 class Range(ctypes.Structure):
-    _pack_ = 1
     _fields_ = [
         ("start", Insn),
         ("end", Insn),
@@ -101,9 +97,6 @@ class Result(ctypes.Structure):
         ("ecxeption", ctypes.c_uint32),
     ]
 
-class FuzzingOp(ctypes.c_int):
-    pass
-
 
 class FuzzerState(ctypes.Structure):
     _fields_ = [
@@ -116,7 +109,7 @@ class FuzzerState(ctypes.Structure):
         ("inj", Inj),
         ("result", Result),
 
-        ("current_op", FuzzingOp),      
+        ("current_op", ctypes.c_int),      
         ("fetch_counter", ctypes.c_uint64),
         ("per_instruction_counter", ctypes.c_uint64),
 
@@ -124,3 +117,5 @@ class FuzzerState(ctypes.Structure):
 
         ("file_open", ctypes.c_bool),
     ]
+
+print("FuzzerState size:", ctypes.sizeof(Range))
