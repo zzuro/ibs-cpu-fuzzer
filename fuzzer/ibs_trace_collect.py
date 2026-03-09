@@ -51,7 +51,9 @@ def reset_log_directory():
 def count_log_files() -> int:
     if not LOG_DIR.exists():
         return 0
-    return sum(1 for f in LOG_DIR.iterdir() if f.is_file())
+    total = sum(1 for f in LOG_DIR.iterdir() if f.is_file())
+    avg_size = sum(f.stat().st_size for f in LOG_DIR.iterdir() if f.is_file()) / total if total > 0 else 0
+    print(f"Log directory contains {total} files, average size: {avg_size:.2f} bytes", file=sys.stderr)
 
 def create_log_directory_if_missing():
     if not LOG_DIR.exists():
@@ -533,7 +535,7 @@ def main() -> int:
             return 1
         
     if args.count_only:
-        print(f"Total log files: {count_log_files()}", file=sys.stderr)
+        count_log_files()
         os.close(dev_fd)
         return 0
 
