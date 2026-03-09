@@ -103,63 +103,37 @@ def handle_event_record(rec: IbsEventRecord, out) -> None:
     global last_was_hpa
     if last_was_hpa:
         out.write(",".join([
-            "rip",
-            "uop_cnt",
-            "phys_addr",
-            "lin_addr",
-            "branch_target_rip",
-            "rax",
-            "rbx",
-            "rcx",
-            "rdx",
-            "rsi",
-            "rdi",
-            "r8",
-            "r9",
-            "r10",
-            "r11",
-            "r12",
-            "r13",
-            "r14",
-            "r15",
-            "rsp",
-            "rbp",
-            "rflags",
-            "op_type",
-            "mem_width",
-            "dc_uc_mem_acc",
-            "dc_wc_mem_acc",
-            "dc_miss",
-            "op_microcode",
-            "op_brn_fuse",
-            "op_brn_ret",
-            "op_brn_misp",
+            "rip","uop_cnt","phys_addr","lin_addr","branch_target_rip",
+            "rax","rbx","rcx","rdx","rsi","rdi","r8","r9","r10","r11",
+            "r12","r13","r14","r15","rsp","rbp","rflags","op_type",
+            "mem_width","dc_uc_mem_acc","dc_wc_mem_acc","dc_miss",
+            "op_microcode","op_brn_fuse","op_brn_ret","op_brn_misp",
             "op_brn_taken",
         ]) + "\n")
 
     out.write(",".join([
-        f"0x{rec.rip:016x}",
+        f"0x{rec.rip:x}",
         str(rec.uop_cnt),
-        f"0x{rec.phys_addr:016x}",
-        f"0x{rec.lin_addr:016x}",
-        f"0x{rec.branch_target_rip:016x}",
-        f"0x{rec.rax:016x}",
-        f"0x{rec.rbx:016x}",
-        f"0x{rec.rcx:016x}",
-        f"0x{rec.rdx:016x}",
-        f"0x{rec.rsi:016x}",
-        f"0x{rec.rdi:016x}",
-        f"0x{rec.r8:016x}",
-        f"0x{rec.r9:016x}",
-        f"0x{rec.r10:016x}",
-        f"0x{rec.r11:016x}",
-        f"0x{rec.r12:016x}",
-        f"0x{rec.r13:016x}",
-        f"0x{rec.r14:016x}",
-        f"0x{rec.r15:016x}",
-        f"0x{rec.rsp:016x}",
-        f"0x{rec.rbp:016x}",
-        f"0x{rec.rflags:016x}",
+        f"0x{rec.phys_addr:x}",
+        f"0x{rec.lin_addr:x}",
+        f"0x{rec.branch_target_rip:x}",
+        f"0x{rec.rax:x}",
+        f"0x{rec.rbx:x}",
+        f"0x{rec.rcx:x}",
+        f"0x{rec.rdx:x}",
+        f"0x{rec.rsi:x}",
+        f"0x{rec.rdi:x}",
+        f"0x{rec.r8:x}",
+        f"0x{rec.r9:x}",
+        f"0x{rec.r10:x}",
+        f"0x{rec.r11:x}",
+        f"0x{rec.r12:x}",
+        f"0x{rec.r13:x}",
+        f"0x{rec.r14:x}",
+        f"0x{rec.r15:x}",
+        f"0x{rec.rsp:x}",
+        f"0x{rec.rbp:x}",
+        f"0x{rec.rflags:x}",
         op_type_to_str(rec.op_type),
         memwithStrings[rec.mem_width],
         str(rec.dc_uc_mem_acc),
@@ -171,6 +145,7 @@ def handle_event_record(rec: IbsEventRecord, out) -> None:
         str(rec.op_brn_misp),
         str(rec.op_brn_taken),
     ]) + "\n")
+
     last_was_hpa = False
 
 # ----------------------------
@@ -447,6 +422,8 @@ def trace_loop_with_timeout(
 
             hdr = IbsRecordHeader.from_buffer_copy(header_blob)
             if hdr.record_len < HEADER_SIZE:
+                st = ioctl_get_state(device_fd)
+                dump_state_to_file(st, on_timeout_state_path)
                 print(f"WARN: malformed record with len={hdr.record_len}, skipping", file=sys.stderr)
                 continue
 
@@ -553,8 +530,6 @@ def main() -> int:
         os.close(dev_fd)
         return 1
         
-        #sudo python3 ibs_trace_collect.py --resume --state-file /mnt/ibs_log_0/fuzz_state.bin
-
     rc = trace_loop_with_timeout(
         device_fd=dev_fd,
         qemu_proc=qemu_proc,
