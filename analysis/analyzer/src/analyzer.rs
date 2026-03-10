@@ -56,6 +56,16 @@ fn read_hex_prefix(path: &Path) -> Result<Vec<u64>> {
     Ok(values)
 }
 
+fn convert_lf_string_to_u64(lf: LazyFrame) -> Result<LazyFrame> {
+    Ok(lf.with_column(
+        col("phys_addr")
+            .str()
+            .strip_prefix(lit("0x"))
+            .str()
+            .to_integer(lit(16u32), Some(DataType::UInt64), true)
+            .alias("phys_addr"),
+    ))
+}
 
 pub fn analyze_csv(path: &Path) -> Result<Option<Finding>> {
 
@@ -68,36 +78,31 @@ pub fn analyze_csv(path: &Path) -> Result<Option<Finding>> {
         .finish()
         .with_context(|| format!("failed to create lazy reader for {}", path.display()))?;
 
-    let guest_physical_addresses = read_hex_prefix(path)?;
-    let page_series = Series::new("target_pages".into(), guest_physical_addresses);
+    let lf = convert_lf_string_to_u64(lf)?;
 
-    // We filter the CSV to only include rows where the physical address (phys_addr) falls within the target pages.
-   let filtered = lf
+    let guest_physical_addresses = read_hex_prefix(path)?;
+    let target_pages: Vec<u64> = guest_physical_addresses
+        .into_iter()
+        .map(|addr| addr / PAGE_SIZE)
+        .collect();
+
+    let page_series = Series::new("target_pages".into(), target_pages);
+
+    let filtered = lf
     .filter(
         col("phys_addr")
-            .cast(DataType::UInt64)
             .floor_div(lit(PAGE_SIZE))
             .is_in(lit(page_series).implode(), false)
             .not()
     )
-    .select([len().alias("cnt")])
-    .collect()
-    .with_context(|| format!("failed to read and filter CSV {}", path.display()))?;
+    .limit(10)
+    .collect()?;
 
 
     let mut finding = Finding {
         source_file: path_str,
         uop_cnt: Vec::new(),
     };
-
-    let cnt = filtered
-    .column("cnt")?
-    .u32()?
-    .get(0)
-    .unwrap_or(0) as u64;
-
-    finding.uop_cnt.push(cnt);
-
 
     Ok(Some(finding))
 }
