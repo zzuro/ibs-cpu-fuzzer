@@ -1,0 +1,11 @@
+[package]
+name = "analyzer"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.102"
+polars = { version = "0.53.0", features = ["lazy", "is_in", "round_series"] }
+serde = "1.0.228"
+serde_json = "1.0.149"
+walkdir = "2.5.0"

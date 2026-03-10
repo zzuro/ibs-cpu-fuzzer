@@ -11,3 +11,4 @@
 - dc_uc_mem_acc = 1: evtl. Zugriff auf MMIO-Bereich / ungewöhnlicher Zugriff
 - Auffällige physische Adresse (z. B. 0x00000000, 0x6c6c6c6c): evtl. Stack-/Guest-Memory als Adresse interpretiert
 - Auffällige branch_target_rip (z. B. 0x00000000, 0x6c6c6c6c): evtl. Stack-/Guest-Memory als Sprungziel verwendet
+- Registerinhalt ändert sich über die 5 Runs: evtl. korrupte Instructionstate
