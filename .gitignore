@@ -286,10 +286,11 @@ injector
 *.deb
 *.buildinfo
 *.changes
+*.csv
 
 vector.bin
 
 vmlinuz
-log
+logs
 
 fuzzer-state

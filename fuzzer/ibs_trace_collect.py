@@ -556,7 +556,6 @@ def main() -> int:
         return 1
 
     qemu_proc = None
-    qemu_script = None
     qemu_script = Path(args.qemu_script)
     try:
         qemu_proc = start_qemu(parse_qemu_script(qemu_script))

@@ -214,16 +214,22 @@ pub fn analyze_csv(path: &Path) -> Result<Option<Finding>> {
     let lin_phys_conflicts = lf
         .clone()
         .group_by([col("uop_cnt"), col("lin_addr")])
-        .agg([col("phys_addr").n_unique().alias("phys_nunique_per_lin")])
+        .agg([
+            col("phys_addr").n_unique().alias("phys_nunique_per_lin"),
+            (col("phys_addr").max() - col("phys_addr").min()).alias("phys_addr_span"),
+        ])
         .with_columns([
             col("phys_nunique_per_lin")
                 .gt(lit(3))
+                .and(col("phys_addr_span").gt_eq(lit(1024)))
                 .alias("lin_phys_conflict"),
         ])
         .group_by([col("uop_cnt")])
-        .agg([col("lin_phys_conflict")
-            .any(false)
-            .alias("flag_same_lin_diff_phys")]);
+        .agg([
+            col("lin_phys_conflict")
+                .any(false)
+                .alias("flag_same_lin_diff_phys"),
+        ]);
 
     let seq = lf
         .clone()
