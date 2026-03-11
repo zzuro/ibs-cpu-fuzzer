@@ -2,11 +2,41 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::fmt;
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ResultEntry {
+    pub uop_cnt: i64,
+    pub phys_addr: u64,
+    pub lin_addr: u64,
+    pub branch_target_rip: u64,
+    pub reasons: Vec<String>,
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Finding {
     pub source_file: String,
-    pub uop_cnt: Vec<u64>,
+    pub res_entry: Vec<ResultEntry>,
+}
+
+
+impl fmt::Display for ResultEntry {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "uop_cnt={} phys=0x{:x} lin=0x{:x} branch=0x{:x}",
+            self.uop_cnt,
+            self.phys_addr,
+            self.lin_addr,
+            self.branch_target_rip
+        )?;
+
+        if !self.reasons.is_empty() {
+            write!(f, " reasons=[{}]", self.reasons.join(", "))?;
+        }
+
+        Ok(())
+    }
 }
 
 pub fn write_finding(output_dir: &Path, finding: &Finding) -> Result<()> {

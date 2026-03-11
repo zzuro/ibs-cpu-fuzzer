@@ -1,6 +1,6 @@
 - Physische Adresse ausserhalb des Guest-Bereichs: evtl. Escape
 - Physische Adresse ändert sich über die 5 Runs: evtl. registerabhängige Adressberechnung
-- Gleiche lineare Adresse, aber unterschiedliche physische Adresse: evtl. registerabhängiger Zugriff / unterschiedliche Translation
+- Gleiche lineare Adresse/oder lineare Adress = 0, aber unterschiedliche physische Adresse: evtl. registerabhängiger Zugriff / unterschiedliche Translation
 - Physische Adresse ähnelt stark einem Registerinhalt: evtl. direkte Verwendung eines Registers in der Adressberechnung
 - Branch-Adresse ändert sich über die 5 Runs: evtl. registerabhängiger Kontrollfluss
 - branch_target_rip ähnelt einem Registerinhalt: evtl. indirekter Sprung über Registerwert (intressant falls wir aus userspace in den Kernel springen)
