@@ -276,7 +276,6 @@ pub fn analyze_csv(path: &Path) -> Result<Option<Finding>> {
             col("flag_dc_uc_mem_acc")
                 .any(false)
                 .alias("flag_dc_uc_mem_acc"),
-            col("phys_addr").n_unique().gt(lit(3)).alias("flag_phys_changes"),
             col("branch_target_rip")
                 .n_unique()
                 .gt(lit(3))
@@ -306,7 +305,6 @@ pub fn analyze_csv(path: &Path) -> Result<Option<Finding>> {
                 .or(col("flag_phys_pattern"))
                 .or(col("flag_branch_pattern"))
                 .or(col("flag_dc_uc_mem_acc"))
-                .or(col("flag_phys_changes"))
                 .or(col("flag_branch_target_changes"))
                 .or(col("flag_phys_msb_changes"))
                 .or(col("flag_any_reg_changes"))
@@ -326,7 +324,6 @@ pub fn analyze_csv(path: &Path) -> Result<Option<Finding>> {
         col("flag_phys_pattern"),
         col("flag_branch_pattern"),
         col("flag_dc_uc_mem_acc"),
-        col("flag_phys_changes"),
         col("flag_branch_target_changes"),
         col("flag_phys_msb_changes"),
         col("flag_any_reg_changes"),
@@ -353,7 +350,6 @@ pub fn analyze_csv(path: &Path) -> Result<Option<Finding>> {
         col("flag_phys_pattern"),
         col("flag_branch_pattern"),
         col("flag_dc_uc_mem_acc"),
-        col("flag_phys_changes"),
         col("flag_branch_target_changes"),
         col("flag_phys_msb_changes"),
         col("flag_any_reg_changes"),
@@ -384,7 +380,6 @@ pub fn analyze_csv(path: &Path) -> Result<Option<Finding>> {
     let flag_phys_pattern = interesting_rows.column("flag_phys_pattern")?.bool()?;
     let flag_branch_pattern = interesting_rows.column("flag_branch_pattern")?.bool()?;
     let flag_dc_uc_mem_acc = interesting_rows.column("flag_dc_uc_mem_acc")?.bool()?;
-    let flag_phys_changes = interesting_rows.column("flag_phys_changes")?.bool()?;
     let flag_branch_target_changes = interesting_rows.column("flag_branch_target_changes")?.bool()?;
     let flag_phys_msb_changes = interesting_rows.column("flag_phys_msb_changes")?.bool()?;
     let flag_any_reg_changes = interesting_rows.column("flag_any_reg_changes")?.bool()?;
@@ -410,9 +405,6 @@ pub fn analyze_csv(path: &Path) -> Result<Option<Finding>> {
         }
         if flag_dc_uc_mem_acc.get(i).unwrap_or(false) {
             reasons.push("dc_uc_mem_acc == 1".to_string());
-        }
-        if flag_phys_changes.get(i).unwrap_or(false) {
-            reasons.push("phys_addr changes across runs".to_string());
         }
         if flag_branch_target_changes.get(i).unwrap_or(false) {
             reasons.push("branch_target_rip changes across runs".to_string());

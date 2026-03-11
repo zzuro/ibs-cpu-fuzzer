@@ -42,7 +42,6 @@ fn main() -> Result<()> {
         match analyze_csv(file) {
             Ok(Some(finding)) => {
                 write_finding(&config.findings_dir, &finding)?;
-                println!("  -> finding written");
                 state.mark_processed(file);
                 state.save(&config.state_file)?;
             }
