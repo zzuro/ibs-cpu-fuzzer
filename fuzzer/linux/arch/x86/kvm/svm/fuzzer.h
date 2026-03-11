@@ -19,6 +19,12 @@ typedef struct {
 } insn_t;
 
 typedef struct {
+    const uint8_t *opcode;
+    size_t len;
+    const char *reason;
+} ignore_op_t;
+
+typedef struct {
 	insn_t i;       
 	int index;
 	int last_len;      

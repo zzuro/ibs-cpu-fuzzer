@@ -17,8 +17,8 @@ import errno
 
 
 
-SSD_DIR = Path("/mnt/")
-LOG_DIR = Path("/mnt/ibs_log")
+SSD_DIR = Path("/mnt/ssd/")
+LOG_DIR = Path("/mnt/ssd/ibs_log")
 IBS_PREFIX = str(LOG_DIR / "ibs_")
 IBS_SUFFIX = ".csv"
 
@@ -33,6 +33,7 @@ FUZZ_IOC_GET_STATE = _IOR(ord('a'), ord('c'), FuzzerState)
 FUZZ_IOC_SET_STATE = _IOW(ord('a'), ord('d'), FuzzerState)  
 FUZZ_IOC_OPEN_LOG = _IO(ord('a'), ord('e'))
 FUZZ_IOC_CLOSE_LOG = _IO(ord('a'), ord('f'))
+FUZZ_IOC_MOVE_NEXT_INSTR = _IO(ord('a'), ord('g'))
 
 
 # ----------------------------
@@ -46,6 +47,17 @@ def reset_log_directory():
     if LOG_DIR.exists():
         shutil.rmtree(LOG_DIR)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+def count_log_files() -> int:
+    if not LOG_DIR.exists():
+        return 0
+    total = sum(1 for f in LOG_DIR.iterdir() if f.is_file())
+    avg_size = sum(f.stat().st_size for f in LOG_DIR.iterdir() if f.is_file()) / total if total > 0 else 0
+    print(f"Log directory contains {total} files, average size: {avg_size:.2f} bytes", file=sys.stderr)
+
+def create_log_directory_if_missing():
+    if not LOG_DIR.exists():
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 def check_disk_space():
     _, _, free = shutil.disk_usage(SSD_DIR)
@@ -98,63 +110,37 @@ def handle_event_record(rec: IbsEventRecord, out) -> None:
     global last_was_hpa
     if last_was_hpa:
         out.write(",".join([
-            "rip",
-            "uop_cnt",
-            "phys_addr",
-            "lin_addr",
-            "branch_target_rip",
-            "rax",
-            "rbx",
-            "rcx",
-            "rdx",
-            "rsi",
-            "rdi",
-            "r8",
-            "r9",
-            "r10",
-            "r11",
-            "r12",
-            "r13",
-            "r14",
-            "r15",
-            "rsp",
-            "rbp",
-            "rflags",
-            "op_type",
-            "mem_width",
-            "dc_uc_mem_acc",
-            "dc_wc_mem_acc",
-            "dc_miss",
-            "op_microcode",
-            "op_brn_fuse",
-            "op_brn_ret",
-            "op_brn_misp",
+            "rip","uop_cnt","phys_addr","lin_addr","branch_target_rip",
+            "rax","rbx","rcx","rdx","rsi","rdi","r8","r9","r10","r11",
+            "r12","r13","r14","r15","rsp","rbp","rflags","op_type",
+            "mem_width","dc_uc_mem_acc","dc_wc_mem_acc","dc_miss",
+            "op_microcode","op_brn_fuse","op_brn_ret","op_brn_misp",
             "op_brn_taken",
         ]) + "\n")
 
     out.write(",".join([
-        f"0x{rec.rip:016x}",
+        f"0x{rec.rip:x}",
         str(rec.uop_cnt),
-        f"0x{rec.phys_addr:016x}",
-        f"0x{rec.lin_addr:016x}",
-        f"0x{rec.branch_target_rip:016x}",
-        f"0x{rec.rax:016x}",
-        f"0x{rec.rbx:016x}",
-        f"0x{rec.rcx:016x}",
-        f"0x{rec.rdx:016x}",
-        f"0x{rec.rsi:016x}",
-        f"0x{rec.rdi:016x}",
-        f"0x{rec.r8:016x}",
-        f"0x{rec.r9:016x}",
-        f"0x{rec.r10:016x}",
-        f"0x{rec.r11:016x}",
-        f"0x{rec.r12:016x}",
-        f"0x{rec.r13:016x}",
-        f"0x{rec.r14:016x}",
-        f"0x{rec.r15:016x}",
-        f"0x{rec.rsp:016x}",
-        f"0x{rec.rbp:016x}",
-        f"0x{rec.rflags:016x}",
+        f"0x{rec.phys_addr:x}",
+        f"0x{rec.lin_addr:x}",
+        f"0x{rec.branch_target_rip:x}",
+        f"0x{rec.rax:x}",
+        f"0x{rec.rbx:x}",
+        f"0x{rec.rcx:x}",
+        f"0x{rec.rdx:x}",
+        f"0x{rec.rsi:x}",
+        f"0x{rec.rdi:x}",
+        f"0x{rec.r8:x}",
+        f"0x{rec.r9:x}",
+        f"0x{rec.r10:x}",
+        f"0x{rec.r11:x}",
+        f"0x{rec.r12:x}",
+        f"0x{rec.r13:x}",
+        f"0x{rec.r14:x}",
+        f"0x{rec.r15:x}",
+        f"0x{rec.rsp:x}",
+        f"0x{rec.rbp:x}",
+        f"0x{rec.rflags:x}",
         op_type_to_str(rec.op_type),
         memwithStrings[rec.mem_width],
         str(rec.dc_uc_mem_acc),
@@ -166,6 +152,7 @@ def handle_event_record(rec: IbsEventRecord, out) -> None:
         str(rec.op_brn_misp),
         str(rec.op_brn_taken),
     ]) + "\n")
+
     last_was_hpa = False
 
 # ----------------------------
@@ -201,7 +188,13 @@ def ioctl_close_log(fd: int) -> None:
     if rc < 0:
         e = ctypes.get_errno()
         raise OSError(e, f"ioctl(CLOSE_LOG) failed: {os.strerror(e)}")
-
+    
+def ioctl_move_next_instr(fd: int) -> None:
+    rc = _ioctl(fd, FUZZ_IOC_MOVE_NEXT_INSTR, None)
+    if rc < 0:
+        e = ctypes.get_errno()
+        raise OSError(e, f"ioctl(MOVE_NEXT_INSTR) failed: {os.strerror(e)}")
+    
 
 def default_reset_state() -> FuzzerState:
     st = FuzzerState()
@@ -225,6 +218,10 @@ def default_reset_state() -> FuzzerState:
 
     return st
 
+def save_state(fd: int, path: Path):
+    st = ioctl_get_state(fd)
+    dump_state_to_file(st, path)
+
 def dump_state_to_file(st: FuzzerState, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     raw = ctypes.string_at(ctypes.byref(st), ctypes.sizeof(st))
@@ -243,7 +240,7 @@ def load_state_from_file(path: Path) -> FuzzerState:
 def dump_fuzzer_state_pretty(st: FuzzerState) -> None:
     def insn_to_str(insn):
         b = bytes(insn.bytes[:insn.len])
-        return f"len={insn.len} bytes=" + " ".join(f"{x:02x}" for x in b)
+        return f"len={insn.len} bytes=" + " ".join(f"\\{x:02x}" for x in b)
 
     print("========== FUZZER STATE ==========")
 
@@ -257,8 +254,6 @@ def dump_fuzzer_state_pretty(st: FuzzerState) -> None:
 
     # range
     print("Total Range:")
-    print(f"  start   : {insn_to_str(st.total_range.start)}")
-    print(f"  end     : {insn_to_str(st.total_range.end)}")
     print(f"  started : {bool(st.total_range.started)}")
     print()
 
@@ -279,8 +274,7 @@ def dump_fuzzer_state_pretty(st: FuzzerState) -> None:
     # misc
     print("Execution:")
     op_map = {0: "START", 1: "INSTRUCTION", 2: "MICROOP"}
-    print(f"  current_op    : {op_map.get(st.current_op, st.current_op)}")
-    print(f"  current_length: {st.current_length}")
+    print(f"  current_op    : {op_map.get(st.current_op)}")
     print(f"  fetch_counter : {st.fetch_counter}")
     print(f"  file_open     : {bool(st.file_open)}")
     print()
@@ -394,12 +388,6 @@ def trace_loop_with_timeout(
 
             # inactivity timeout check, try to restart
             if now - last_received >= inactivity_timeout:
-                print(f"TIMEOUT: no trace_pipe activity for {inactivity_timeout}s", file=sys.stderr)
-                try:
-                    log_timeout_instruction(crash_log, current_insn_bytes)
-                    print(f"Logged timeout instruction to {crash_log}", file=sys.stderr)
-                except Exception as e:
-                    print(f"WARN: failed to log timeout instruction: {e}", file=sys.stderr)
                 try:
                     st = ioctl_get_state(device_fd)
                     dump_state_to_file(st, on_timeout_state_path)
@@ -407,9 +395,18 @@ def trace_loop_with_timeout(
                 except Exception as e:
                     print(f"ERROR: failed to GET/DUMP state on timeout: {e}", file=sys.stderr)
 
+                print(f"TIMEOUT: no trace_pipe activity for {inactivity_timeout}s", file=sys.stderr)
+                try:
+                    log_timeout_instruction(crash_log, bytes(st.inj.i.bytes[:st.inj.i.len]))
+                    print(f"Logged timeout instruction to {crash_log}", file=sys.stderr)
+                except Exception as e:
+                    print(f"WARN: failed to log timeout instruction: {e}", file=sys.stderr)
+
                 if qemu_proc is not None:
                     print("Stopping QEMU ...", file=sys.stderr)
                     kill_qemu(qemu_proc)
+                    
+                ioctl_move_next_instr(device_fd)
 
                 try:
                     qemu_proc = start_qemu(parse_qemu_script(qemu_script)) 
@@ -436,6 +433,8 @@ def trace_loop_with_timeout(
 
             hdr = IbsRecordHeader.from_buffer_copy(header_blob)
             if hdr.record_len < HEADER_SIZE:
+                st = ioctl_get_state(device_fd)
+                dump_state_to_file(st, on_timeout_state_path)
                 print(f"WARN: malformed record with len={hdr.record_len}, skipping", file=sys.stderr)
                 continue
 
@@ -500,12 +499,21 @@ def trace_loop_with_timeout(
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--qemu-script", default="./../vms/qemu.sh", help="Path to qemu start script")
-    ap.add_argument("--timeout", type=float, default=30.0, help="Inactivity timeout (seconds) on trace_pipe; 0 disables")
-    ap.add_argument("--state-file", default="/mnt/ibs_log/fuzz_state.bin",
+    ap.add_argument("--timeout", type=float, default=10.0, help="Inactivity timeout (seconds) on trace_pipe; 0 disables")
+    ap.add_argument("--state-file", default="/mnt/ssd/ibs_log/fuzz_state.bin",
                     help="Where to dump fuzz_state on timeout (and/or for periodic dumps)")
     ap.add_argument("--resume", action="store_true",
                     help="Resume from --state-file instead of resetting to defaults")
-    ap.add_argument("--no-qemu", action="store_true", help="Do not start QEMU (debug)")
+    ap.add_argument(
+        "--save-state",
+        nargs="?",
+        const="/mnt/ssd/ibs_log/fuzz_state.bin",
+        default=None,
+        help="Save fuzz state (optional path)"
+    )
+
+    ap.add_argument("--count-only", action="store_true", help="Only count records and exit (for testing)")
+
     args = ap.parse_args()
 
     try:
@@ -516,10 +524,27 @@ def main() -> int:
 
     state_path = Path(args.state_file)
 
+    if args.save_state:
+        try:
+            save_state(dev_fd, Path(args.save_state))
+            print(f"Saved fuzz_state to {args.save_state}", file=sys.stderr)
+            return 0
+        except Exception as e:
+            print(f"Failed to save state: {e}", file=sys.stderr)
+            os.close(dev_fd)
+            return 1
+        
+    if args.count_only:
+        count_log_files()
+        os.close(dev_fd)
+        return 0
+
     try:
         if args.resume:
             st = load_state_from_file(state_path)
+            dump_fuzzer_state_pretty(st)
             ioctl_set_state(dev_fd, st)
+            create_log_directory_if_missing()
             print(f"Resumed fuzz_state from {state_path}", file=sys.stderr)
         else:
             st = default_reset_state()
@@ -532,16 +557,15 @@ def main() -> int:
 
     qemu_proc = None
     qemu_script = None
-    if not args.no_qemu:
-        qemu_script = Path(args.qemu_script)
-        try:
-            qemu_proc = start_qemu(parse_qemu_script(qemu_script))
-            print(f"Started QEMU via {qemu_script} (pid={qemu_proc.pid})", file=sys.stderr)
-        except Exception as e:
-            print(f"Failed to start QEMU: {e}", file=sys.stderr)
-            os.close(dev_fd)
-            return 1
-
+    qemu_script = Path(args.qemu_script)
+    try:
+        qemu_proc = start_qemu(parse_qemu_script(qemu_script))
+        print(f"Started QEMU via {qemu_script} (pid={qemu_proc.pid})", file=sys.stderr)
+    except Exception as e:
+        print(f"Failed to start QEMU: {e}", file=sys.stderr)
+        os.close(dev_fd)
+        return 1
+        
     rc = trace_loop_with_timeout(
         device_fd=dev_fd,
         qemu_proc=qemu_proc,

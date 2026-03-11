@@ -1933,6 +1933,11 @@ static void svm_set_dr7(struct kvm_vcpu *vcpu, unsigned long value)
 	vmcb_mark_dirty(svm->vmcb, VMCB_DR);
 }
 
+#define REGISTER_VALUE 			0x9900000000 
+#define GUEST_PHYS_ADDR_START 	0x00400000 
+#define GUEST_PHYS_ADDR_END 	0x005FFFFF
+#define GUEST_PHYS_PAGE_SIZE 	((GUEST_PHYS_ADDR_END - GUEST_PHYS_ADDR_START + 1)/PAGE_SIZE)
+
 #define MAX_INSTRUCTION_COUNT 6000
 #define PER_INSTRUCTION_COUNTER 5
 
@@ -1988,6 +1993,15 @@ static noinline void __used preamble(void)
         : "i"(TF)
         : "memory"
     );
+}
+
+static void __maybe_unused dump_instruction(void)
+{
+	pr_info("[Fuzzer] instruction:fuzz_state.inj.i.bytes");
+	for(int i = 0; i < fuzz_state.inj.i.len; i++)		{
+		pr_cont(" %02x", fuzz_state.inj.i.bytes[i]);
+	}
+	pr_cont("\n");
 }
 
 static void save_reg_state(struct kvm_vcpu *vcpu)
@@ -2179,6 +2193,65 @@ static void reset_state(struct kvm_vcpu *vcpu)
 	vmcb_mark_all_dirty(to_svm(vcpu)->vmcb);
 }
 
+#define MAX_BLACKLIST 128
+static ignore_op_t opcode_blacklist[] = {
+    { (const uint8_t*)"\x0f\x20", 2, "MOV r,CRx" },
+    { (const uint8_t*)"\x0f\x22", 2, "MOV CRx,r" },
+    { (const uint8_t*)"\x0f\x21", 2, "MOV r,DRx" },
+    { (const uint8_t*)"\x0f\x23", 2, "MOV DRx,r" },
+    { (const uint8_t*)"\x0f\x33", 2, "RDPMC" },
+    { (const uint8_t*)"\x0f\xa2", 2, "CPUID" },
+    { (const uint8_t*)"\x0f\x08", 2, "INVD" },
+    { (const uint8_t*)"\x0f\x01\xdf", 3, "INVLPGA" },
+    { (const uint8_t*)"\x0f\x09", 2, "WBINVD" },
+    { (const uint8_t*)"\x0f\x01\xd1", 3, "XSETBV" },
+    { (const uint8_t*)"\x0f\x01\xfd", 3, "RDPRU" },
+    { (const uint8_t*)"\x0f\x32", 2, "RDMSR" },
+    { (const uint8_t*)"\x0f\x30", 2, "WRMSR" },
+    { (const uint8_t*)"\xe4", 1, "IN" },
+    { (const uint8_t*)"\xe5", 1, "IN" },
+    { (const uint8_t*)"\xec", 1, "IN" },
+    { (const uint8_t*)"\xed", 1, "IN" },
+    { (const uint8_t*)"\xe6", 1, "OUT" },
+    { (const uint8_t*)"\xe7", 1, "OUT" },
+    { (const uint8_t*)"\xee", 1, "OUT" },
+    { (const uint8_t*)"\xef", 1, "OUT" },
+    { (const uint8_t*)"\x6c", 1, "INSB" },
+    { (const uint8_t*)"\x6d", 1, "INS" },
+    { (const uint8_t*)"\x6e", 1, "OUTSB" },
+    { (const uint8_t*)"\x6f", 1, "OUTS" },
+    { (const uint8_t*)"\x0f\x01\xd8", 3, "VMRUN" },
+    { (const uint8_t*)"\x0f\x01\xd9", 3, "VMMCALL" },
+    { (const uint8_t*)"\x0f\x01\xda", 3, "VMLOAD" },
+    { (const uint8_t*)"\x0f\x01\xdb", 3, "VMSAVE" },
+    { (const uint8_t*)"\x0f\x01\xdc", 3, "STGI" },
+    { (const uint8_t*)"\x0f\x01\xdd", 3, "CLGI" },
+    { (const uint8_t*)"\x0f\x01\xde", 3, "SKINIT" },
+    { (const uint8_t*)"\x0f\xaa", 2, "RSM" },
+    { (const uint8_t*)"\x0f\x01\xc8", 3, "MONITOR" },
+    { (const uint8_t*)"\x0f\x01\xc9", 3, "MWAIT" },
+    { (const uint8_t*)"\xf4", 1, "HLT" },
+    { (const uint8_t*)"\xf3\x90", 2, "PAUSE" },
+    { NULL, 0, NULL }
+};
+
+static bool has_opcode(const uint8_t *op, size_t len)
+{
+   return memcmp(fuzz_state.inj.i.bytes, op, len) == 0;
+}
+
+static bool filter_instruction(void)
+{
+	
+	for (int i = 0; opcode_blacklist[i].opcode != NULL; i++) {
+        if (has_opcode(opcode_blacklist[i].opcode, opcode_blacklist[i].len)) {
+            return true; 
+        }
+    }
+
+	return false; 
+}
+
 static void zero_insn_end(insn_t *insn, int marker)
 {
 	int i;
@@ -2276,30 +2349,33 @@ static int move_next_instruction(void)
 			fuzz_state->inj.index++;
 		}
 
-		fuzz_state->inj.last_len = fuzz_state->result.length;
-		fuzz_state->inj.i.bytes[fuzz_state->inj.index]++;
+    fuzz_state.inj.last_len = fuzz_state.result.length;
+    fuzz_state.inj.i.bytes[fuzz_state.inj.index]++; 
 
-		while (fuzz_state->inj.index >= 0 &&
-		       fuzz_state->inj.i.bytes[fuzz_state->inj.index] == 0) {
-			fuzz_state->inj.index--;
-			if (fuzz_state->inj.index >= 0) {
-				fuzz_state->inj.i.bytes[fuzz_state->inj.index]++;
-			}
-			fuzz_state->inj.last_len = -1;
-		}
+    while (fuzz_state.inj.index >= 0 && fuzz_state.inj.i.bytes[fuzz_state.inj.index] == 0)
+    {
+        fuzz_state.inj.index--;
+        if (fuzz_state.inj.index >= 0)
+        {
+            fuzz_state.inj.i.bytes[fuzz_state.inj.index]++;
+        }
+        fuzz_state.inj.last_len = -1;
+    }
 
-		//when generating new instruction, we need to reset the length
-		fuzz_state->inj.i.len = 1;
-	}
+	//when generating new instruction, we need to reset the length
+	fuzz_state.inj.i.len = 1;
 
-	if (!fuzz_state->inj.index < 0) {
-		if (!move_next_range()) {
-			return 0;
-		} else {
-			return move_next_instruction();
-		}
-	}
+	return fuzz_state.inj.index >= 0; 
 }
+
+static void init_inj(void)
+{
+	fuzz_state.inj.i = fuzz_state.total_range.start;
+	fuzz_state.inj.i.len = 1;
+	fuzz_state.inj.last_len = -1;
+	fuzz_state.inj.index = 0;
+}
+
 
 static void setup_fuzzer(struct kvm_vcpu *vcpu)
 {
@@ -2358,10 +2434,11 @@ static void setup_fuzzer(struct kvm_vcpu *vcpu)
 	}
 	mutex_unlock(&fuzz_mutex);
 
-	fuzz_state->current_op = INSTRUCTION;
-	fuzz_state->fetch_counter = 0;
-	fuzz_state->per_instruction_counter = 0;
-	fuzz_state->file_open = false;
+	fuzz_state.current_op = INSTRUCTION;
+	fuzz_state.fetch_counter = 0;
+	fuzz_state.per_instruction_counter = 0;
+	fuzz_state.file_open = false;
+
 }
 
 static void fetch_microop(int exit_code, struct kvm_vcpu *vcpu)
@@ -6106,6 +6183,7 @@ static void __svm_exit(void)
 #define FUZZ_IOC_SET_STATE _IOW('a', 'd', fuzzer_state_t)
 #define FUZZ_IOC_OPEN_LOG _IO('a', 'e')
 #define FUZZ_IOC_CLOSE_LOG _IO('a', 'f')
+#define FUZZ_IOC_MOVE_NEXT_INSTR _IO('a', 'g')
 
 static long fuzz_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
@@ -6127,6 +6205,10 @@ static long fuzz_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 
 	case FUZZ_IOC_CLOSE_LOG:
 		ibs_log_close();
+		return 0;
+
+	case FUZZ_IOC_MOVE_NEXT_INSTR:
+		move_next_instruction();
 		return 0;
     default:
         return -EINVAL;
