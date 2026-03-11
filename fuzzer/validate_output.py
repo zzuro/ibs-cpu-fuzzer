@@ -120,7 +120,7 @@ def check_csv(path):
 
 if __name__ == "__main__":
 
-    log_dir = Path("/mnt/ssd/ibs_log")
+    log_dir = Path("/mnt/truenas/ibs_log")
 
     files = [f for f in sorted(log_dir.glob("*")) if f.is_file()]
 

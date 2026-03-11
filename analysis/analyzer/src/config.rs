@@ -14,7 +14,7 @@ impl Config {
         let input_dir = args
             .next()
             .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("/mnt/ssd/ibs_log"));
+            .unwrap_or_else(|| PathBuf::from("/mnt/truenas/ibs_log"));
 
         let findings_dir = args
             .next()
