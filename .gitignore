@@ -294,3 +294,5 @@ vmlinuz
 logs
 
 fuzzer-state
+
+!fuzzer/linux/.config
