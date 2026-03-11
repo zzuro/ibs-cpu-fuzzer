@@ -32,6 +32,7 @@ Desktop.ini
 *.slo
 *.d
 *.a
+*.lib
 *.so
 *.so.*
 *.dylib
@@ -294,4 +295,5 @@ logs
 
 fuzzer-state
 
-!fuzzer/linux/.config
+!fuzzer/linux/
+!fuzzer/linux/**
