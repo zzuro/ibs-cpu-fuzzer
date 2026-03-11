@@ -11,6 +11,8 @@ use discovery::collect_csv_files;
 use state::AnalyzerState;
 use writer::write_finding;
 
+use indicatif::{ProgressBar, ProgressStyle};
+
 fn main() -> Result<()> {
     let config = Config::from_args();
 
@@ -23,8 +25,17 @@ fn main() -> Result<()> {
 
     println!("Discovered {} CSV files", files.len());
 
+    let pb = ProgressBar::new(files.len() as u64);
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len}")
+            .unwrap()
+    );
+
+
     for file in files.iter() {
         if state.has_processed(file) {
+            pb.inc(1);
             continue;
         }
 
@@ -43,8 +54,10 @@ fn main() -> Result<()> {
                 eprintln!("  -> failed: {err}");
             }
         }
+        pb.inc(1);
     }
 
+    pb.finish();
     println!("Done.");
     Ok(())
 }

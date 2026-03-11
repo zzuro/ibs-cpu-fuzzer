@@ -7,8 +7,11 @@ use std::fmt;
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ResultEntry {
     pub uop_cnt: i64,
+    #[serde(serialize_with = "serialize_hex")]
     pub phys_addr: u64,
+    #[serde(serialize_with = "serialize_hex")]
     pub lin_addr: u64,
+    #[serde(serialize_with = "serialize_hex")]
     pub branch_target_rip: u64,
     pub reasons: Vec<String>,
 }
@@ -37,6 +40,13 @@ impl fmt::Display for ResultEntry {
 
         Ok(())
     }
+}
+
+fn serialize_hex<S>(value: &u64, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    serializer.serialize_str(&format!("0x{:x}", value))
 }
 
 pub fn write_finding(output_dir: &Path, finding: &Finding) -> Result<()> {

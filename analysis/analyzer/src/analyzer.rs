@@ -217,7 +217,7 @@ pub fn analyze_csv(path: &Path) -> Result<Option<Finding>> {
         .agg([col("phys_addr").n_unique().alias("phys_nunique_per_lin")])
         .with_columns([
             col("phys_nunique_per_lin")
-                .gt(lit(1))
+                .gt(lit(3))
                 .alias("lin_phys_conflict"),
         ])
         .group_by([col("uop_cnt")])
@@ -276,15 +276,15 @@ pub fn analyze_csv(path: &Path) -> Result<Option<Finding>> {
             col("flag_dc_uc_mem_acc")
                 .any(false)
                 .alias("flag_dc_uc_mem_acc"),
-            col("phys_addr").n_unique().gt(lit(1)).alias("flag_phys_changes"),
+            col("phys_addr").n_unique().gt(lit(3)).alias("flag_phys_changes"),
             col("branch_target_rip")
                 .n_unique()
-                .gt(lit(1))
+                .gt(lit(3))
                 .alias("flag_branch_target_changes"),
             col("phys_addr")
                 .floor_div(lit(1u64 << 48))
                 .n_unique()
-                .gt(lit(1))
+                .gt(lit(3))
                 .alias("flag_phys_msb_changes"),
             reg_change_expr,
         ])
@@ -442,9 +442,6 @@ pub fn analyze_csv(path: &Path) -> Result<Option<Finding>> {
         });
     }
 
-    for entry in &finding.res_entry {
-        println!("{entry}");
-    }
+    Ok(Some(finding))
 
-    Ok(None)
 }
