@@ -32,7 +32,6 @@ Desktop.ini
 *.slo
 *.d
 *.a
-*.lib
 *.so
 *.so.*
 *.dylib
