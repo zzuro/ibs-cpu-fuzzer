@@ -1944,7 +1944,7 @@ static void svm_set_dr7(struct kvm_vcpu *vcpu, unsigned long value)
 static DEFINE_MUTEX(fuzz_mutex);
 
 //number of base instruction bytes in each sub range
-#define RANGE_BYTES 15
+#define RANGE_BYTES 1
 
 static fuzzer_state_t global_fuzz_state = {
 
@@ -2349,23 +2349,37 @@ static int move_next_instruction(void)
 			fuzz_state->inj.index++;
 		}
 
-    fuzz_state.inj.last_len = fuzz_state.result.length;
-    fuzz_state.inj.i.bytes[fuzz_state.inj.index]++; 
+    	fuzz_state.inj.last_len = fuzz_state.result.length;
+    	fuzz_state.inj.i.bytes[fuzz_state.inj.index]++; 
 
-    while (fuzz_state.inj.index >= 0 && fuzz_state.inj.i.bytes[fuzz_state.inj.index] == 0)
-    {
-        fuzz_state.inj.index--;
-        if (fuzz_state.inj.index >= 0)
-        {
-            fuzz_state.inj.i.bytes[fuzz_state.inj.index]++;
-        }
-        fuzz_state.inj.last_len = -1;
-    }
+    	while (fuzz_state.inj.index >= 0 && fuzz_state.inj.i.bytes[fuzz_state.inj.index] == 0)
+    	{
+    	    fuzz_state.inj.index--;
+    	    if (fuzz_state.inj.index >= 0)
+    	    {
+    	        fuzz_state.inj.i.bytes[fuzz_state.inj.index]++;
+    	    }
+    	    fuzz_state.inj.last_len = -1;
+    	}
 
-	//when generating new instruction, we need to reset the length
+	}
+
+	fuzz_state->search_range.started = true;
 	fuzz_state.inj.i.len = 1;
 
-	return fuzz_state.inj.index >= 0; 
+	if(filter_instruction()) {
+		return move_next_instruction();
+	}
+
+	if(memcmp(fuzz_state->inj.i.bytes, fuzz_state->search_range.end.bytes, sizeof(fuzz_state->inj.i.bytes)) > 0) {
+		if (!move_next_range()) {
+			return 0;
+		} else {
+			return move_next_instruction();
+		}
+	}
+
+	return fuzz_state->inj.index >= 0;; 
 }
 
 static void init_inj(void)
@@ -2434,10 +2448,15 @@ static void setup_fuzzer(struct kvm_vcpu *vcpu)
 	}
 	mutex_unlock(&fuzz_mutex);
 
+	fuzz_state.inj.i.len = 1;
 	fuzz_state.current_op = INSTRUCTION;
 	fuzz_state.fetch_counter = 0;
 	fuzz_state.per_instruction_counter = 0;
 	fuzz_state.file_open = false;
+
+	if(filter_instruction()) {
+		move_next_instruction();
+	}
 
 }
 
