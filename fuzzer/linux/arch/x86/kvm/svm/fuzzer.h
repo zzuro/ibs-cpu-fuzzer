@@ -6,7 +6,6 @@
 #define UD2_SIZE  2
 #define MAGIC_VALUE 0x1234DEADBEEF1234ULL
 
-#define REGISTER_VALUE 			0x4000000000 
 #define GUEST_PHYS_ADDR_START 	0x00400000 
 #define GUEST_PHYS_ADDR_END 	0x005FFFFF
 #define GUEST_PHYS_PAGE_SIZE 	((GUEST_PHYS_ADDR_END - GUEST_PHYS_ADDR_START + 1)/PAGE_SIZE)
@@ -80,7 +79,7 @@ typedef struct cpu_state{
 	uint64_t fetch_counter;
 	uint64_t per_instruction_counter;
 
-	reg_state_t regs;
+	reg_state_t saved_regs;
 	uint64_t hpa_mapping[GUEST_PHYS_PAGE_SIZE];
 
 	struct vmcb_save_area saved_state;

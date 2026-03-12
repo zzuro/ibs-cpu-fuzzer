@@ -1971,13 +1971,11 @@ static fuzzer_state_t global_fuzz_state = {
 		.len = 1,
 	},
 
-	.cpu_state = {0},
+	.cpu_state = {},
 
 	.done = false,
 
 };
-
-static reg_state_t saved_regs;
 
 #define TF 0x100
 extern char preamble_start, preamble_end;
@@ -1999,36 +1997,46 @@ static noinline void __used preamble(void)
 
 static void __maybe_unused dump_instruction(void)
 {
-	pr_info("[Fuzzer] instruction:fuzz_state.inj.i.bytes");
-	for(int i = 0; i < fuzz_state.inj.i.len; i++)		{
-		pr_cont(" %02x", fuzz_state.inj.i.bytes[i]);
+	preempt_disable();
+	int cpu = smp_processor_id();
+	cpu_state_t*fuzz_state = &global_fuzz_state.cpu_state[cpu];
+	preempt_enable();
+	
+	pr_info("[Fuzzer] instruction:fuzz_state.inj.i.bytes on CPU %d:", cpu);
+	for(int i = 0; i < fuzz_state->inj.i.len; i++)		{
+		pr_cont(" %02x", fuzz_state->inj.i.bytes[i]);
 	}
 	pr_cont("\n");
 }
 
 static void save_reg_state(struct kvm_vcpu *vcpu)
 {
-	saved_regs.rax = kvm_register_read(vcpu, VCPU_REGS_RAX);
-	saved_regs.rbx = kvm_register_read(vcpu, VCPU_REGS_RBX);
-	saved_regs.rcx = kvm_register_read(vcpu, VCPU_REGS_RCX);
-	saved_regs.rdx = kvm_register_read(vcpu, VCPU_REGS_RDX);
+	preempt_disable();
+	int cpu = smp_processor_id();
+	cpu_state_t*fuzz_state = &global_fuzz_state.cpu_state[cpu];
+	preempt_enable();
+	
+	fuzz_state->saved_regs.rax = kvm_register_read(vcpu, VCPU_REGS_RAX);
+	fuzz_state->saved_regs.rbx = kvm_register_read(vcpu, VCPU_REGS_RBX);
+	fuzz_state->saved_regs.rcx = kvm_register_read(vcpu, VCPU_REGS_RCX);
+	fuzz_state->saved_regs.rdx = kvm_register_read(vcpu, VCPU_REGS_RDX);
 
-	saved_regs.rsi = kvm_register_read(vcpu, VCPU_REGS_RSI);
-	saved_regs.rdi = kvm_register_read(vcpu, VCPU_REGS_RDI);
+	fuzz_state->saved_regs.rsi = kvm_register_read(vcpu, VCPU_REGS_RSI);
+	fuzz_state->saved_regs.rdi = kvm_register_read(vcpu, VCPU_REGS_RDI);
 
-	saved_regs.r8  = kvm_register_read(vcpu, VCPU_REGS_R8);
-	saved_regs.r9  = kvm_register_read(vcpu, VCPU_REGS_R9);
-	saved_regs.r10 = kvm_register_read(vcpu, VCPU_REGS_R10);
-	saved_regs.r11 = kvm_register_read(vcpu, VCPU_REGS_R11);
-	saved_regs.r12 = kvm_register_read(vcpu, VCPU_REGS_R12);
-	saved_regs.r13 = kvm_register_read(vcpu, VCPU_REGS_R13);
-	saved_regs.r14 = kvm_register_read(vcpu, VCPU_REGS_R14);
-	saved_regs.r15 = kvm_register_read(vcpu, VCPU_REGS_R15);
+	fuzz_state->saved_regs.r8  = kvm_register_read(vcpu, VCPU_REGS_R8);
+	fuzz_state->saved_regs.r9  = kvm_register_read(vcpu, VCPU_REGS_R9);
+	fuzz_state->saved_regs.r10 = kvm_register_read(vcpu, VCPU_REGS_R10);
+	fuzz_state->saved_regs.r11 = kvm_register_read(vcpu, VCPU_REGS_R11);
+	fuzz_state->saved_regs.r12 = kvm_register_read(vcpu, VCPU_REGS_R12);
+	fuzz_state->saved_regs.r13 = kvm_register_read(vcpu, VCPU_REGS_R13);
+	fuzz_state->saved_regs.r14 = kvm_register_read(vcpu, VCPU_REGS_R14);
+	fuzz_state->saved_regs.r15 = kvm_register_read(vcpu, VCPU_REGS_R15);
 
-	saved_regs.rbp = kvm_register_read(vcpu, VCPU_REGS_RBP);
-	saved_regs.rsp = kvm_register_read(vcpu, VCPU_REGS_RSP);
+	fuzz_state->saved_regs.rbp = kvm_register_read(vcpu, VCPU_REGS_RBP);
+	fuzz_state->saved_regs.rsp = kvm_register_read(vcpu, VCPU_REGS_RSP);
 
-	saved_regs.rflags = kvm_get_rflags(vcpu);
+	fuzz_state->saved_regs.rflags = kvm_get_rflags(vcpu);
 }
 
 static void set_gpr(uint64_t value, struct kvm_vcpu *vcpu)
@@ -2239,7 +2247,12 @@ static ignore_op_t opcode_blacklist[] = {
 
 static bool has_opcode(const uint8_t *op, size_t len)
 {
-   return memcmp(fuzz_state.inj.i.bytes, op, len) == 0;
+    preempt_disable();
+	int cpu = smp_processor_id();
+	cpu_state_t *fuzz_state = &global_fuzz_state.cpu_state[cpu];
+	preempt_enable();
+	
+	return memcmp(fuzz_state->inj.i.bytes, op, len) == 0;
 }
 
 static bool filter_instruction(void)
@@ -2295,7 +2308,7 @@ static void init_inj(insn_t* new_insn, inj_t* inj)
 	inj->index = -1;
 }
 
-static bool move_next_range()
+static bool move_next_range(void)
 {
 	bool result = true;
 	mutex_lock(&fuzz_mutex);
@@ -2351,23 +2364,23 @@ static int move_next_instruction(void)
 			fuzz_state->inj.index++;
 		}
 
-    	fuzz_state.inj.last_len = fuzz_state.result.length;
-    	fuzz_state.inj.i.bytes[fuzz_state.inj.index]++; 
+    	fuzz_state->inj.last_len = fuzz_state->result.length;
+    	fuzz_state->inj.i.bytes[fuzz_state->inj.index]++; 
 
-    	while (fuzz_state.inj.index >= 0 && fuzz_state.inj.i.bytes[fuzz_state.inj.index] == 0)
+    	while (fuzz_state->inj.index >= 0 && fuzz_state->inj.i.bytes[fuzz_state->inj.index] == 0)
     	{
-    	    fuzz_state.inj.index--;
-    	    if (fuzz_state.inj.index >= 0)
+    	    fuzz_state->inj.index--;
+    	    if (fuzz_state->inj.index >= 0)
     	    {
-    	        fuzz_state.inj.i.bytes[fuzz_state.inj.index]++;
+    	        fuzz_state->inj.i.bytes[fuzz_state->inj.index]++;
     	    }
-    	    fuzz_state.inj.last_len = -1;
+    	    fuzz_state->inj.last_len = -1;
     	}
 
 	}
 
 	fuzz_state->search_range.started = true;
-	fuzz_state.inj.i.len = 1;
+	fuzz_state->inj.i.len = 1;
 
 	if(filter_instruction()) {
 		return move_next_instruction();
@@ -2382,14 +2395,6 @@ static int move_next_instruction(void)
 	}
 
 	return fuzz_state->inj.index >= 0;; 
-}
-
-static void init_inj(void)
-{
-	fuzz_state.inj.i = fuzz_state.total_range.start;
-	fuzz_state.inj.i.len = 1;
-	fuzz_state.inj.last_len = -1;
-	fuzz_state.inj.index = 0;
 }
 
 
@@ -2450,11 +2455,11 @@ static void setup_fuzzer(struct kvm_vcpu *vcpu)
 	}
 	mutex_unlock(&fuzz_mutex);
 
-	fuzz_state.inj.i.len = 1;
-	fuzz_state.current_op = INSTRUCTION;
-	fuzz_state.fetch_counter = 0;
-	fuzz_state.per_instruction_counter = 0;
-	fuzz_state.file_open = false;
+	fuzz_state->inj.i.len = 1;
+	fuzz_state->current_op = INSTRUCTION;
+	fuzz_state->fetch_counter = 0;
+	fuzz_state->per_instruction_counter = 0;
+	fuzz_state->file_open = false;
 
 	if(filter_instruction()) {
 		move_next_instruction();
@@ -2513,11 +2518,16 @@ static void fetch_microop(int exit_code, struct kvm_vcpu *vcpu)
 
 static int pf_interception(struct kvm_vcpu *vcpu)
 {
+	preempt_disable();
+	int cpu = smp_processor_id();
+	cpu_state_t* fuzz_state = &global_fuzz_state.cpu_state[cpu];
+	preempt_enable();
+	
 	struct vcpu_svm *svm = to_svm(vcpu);
 	uint64_t cr2 = svm->vmcb->control.exit_info_2; //contains cr2 value at the time of page fault
-	if(cr2 == (uint64_t)fuzz_state.fuzz_mem2_guest) {
-		fuzz_state.inj.i.len++;
-		if(fuzz_state.inj.i.len <= MAX_INSN_LENGTH) {
+	if(cr2 == (uint64_t)fuzz_state->fuzz_mem2_guest) {
+		fuzz_state->inj.i.len++;
+		if(fuzz_state->inj.i.len <= MAX_INSN_LENGTH) {
 			write_instr(vcpu, REGISTER_VALUE, 0);
 			reset_state(vcpu);
 		}else{
@@ -4863,11 +4873,16 @@ static void __maybe_unused read_ibs_ctrl(u64 uop_cnt)
 
 	u64 branch_target_rip = __read_msr(BP_IBSTGT_RIP);
 
-	if (fuzz_state.current_op == MICROOP && fuzz_state.file_open) {
+	preempt_disable();
+	int cpu = smp_processor_id();
+	cpu_state_t* fuzz_state = &global_fuzz_state.cpu_state[cpu];
+	preempt_enable();
+
+	if (fuzz_state->current_op == MICROOP && fuzz_state->file_open) {
 		ibs_log_event(rip_value, uop_cnt, opData3, opData1, phys_addr, lin_addr,
-		saved_regs.rax, saved_regs.rbx, saved_regs.rcx, saved_regs.rdx, saved_regs.rsi, saved_regs.rdi,
-		saved_regs.r8, saved_regs.r9, saved_regs.r10, saved_regs.r11, saved_regs.r12, saved_regs.r13, saved_regs.r14, saved_regs.r15,
-		saved_regs.rflags, saved_regs.rsp, saved_regs.rbp, branch_target_rip, fuzz_state.inj.i.bytes, fuzz_state.inj.i.len);
+		fuzz_state->saved_regs.rax, fuzz_state->saved_regs.rbx, fuzz_state->saved_regs.rcx, fuzz_state->saved_regs.rdx, fuzz_state->saved_regs.rsi, fuzz_state->saved_regs.rdi,
+		fuzz_state->saved_regs.r8, fuzz_state->saved_regs.r9, fuzz_state->saved_regs.r10, fuzz_state->saved_regs.r11, fuzz_state->saved_regs.r12, fuzz_state->saved_regs.r13, fuzz_state->saved_regs.r14, fuzz_state->saved_regs.r15,
+		fuzz_state->saved_regs.rflags, fuzz_state->saved_regs.rsp, fuzz_state->saved_regs.rbp, branch_target_rip, fuzz_state->inj.i.bytes, fuzz_state->inj.i.len);
 	}
 
 	ibs_op_ctl_data.val = 0;
@@ -4920,18 +4935,23 @@ static noinstr void svm_vcpu_enter_exit(struct kvm_vcpu *vcpu,
 
 	amd_clear_divider();
 
+	preempt_disable();
+	int cpu = smp_processor_id();
+	cpu_state_t* fuzz_state = &global_fuzz_state.cpu_state[cpu];
+	preempt_enable();
+
 	if (sev_es_guest(vcpu->kvm)) {
 			__svm_sev_es_vcpu_run(svm, spec_ctrl_intercepted,
 			sev_es_host_save_area(sd));
 	} else {
-		if (fuzz_state.current_op == MICROOP && fuzz_state.file_open) {
-			write_ibs_ctrl(fuzz_state.fetch_counter);
+		if (fuzz_state->current_op == MICROOP && fuzz_state->file_open) {
+			write_ibs_ctrl(fuzz_state->fetch_counter);
 		}
 
 		__svm_vcpu_run(svm, spec_ctrl_intercepted);
 
-		if (fuzz_state.current_op == MICROOP && fuzz_state.file_open && fuzz_state.fetch_counter <= MAX_INSTRUCTION_COUNT) {
-			read_ibs_ctrl(fuzz_state.fetch_counter);
+		if (fuzz_state->current_op == MICROOP && fuzz_state->file_open && fuzz_state->fetch_counter <= MAX_INSTRUCTION_COUNT) {
+			read_ibs_ctrl(fuzz_state->fetch_counter);
 		}
 	}
 
@@ -6200,8 +6220,8 @@ static void __svm_exit(void)
 }
 
 #define DEVICE_NAME "svm_ibs_dev"
-#define FUZZ_IOC_GET_STATE _IOR('a', 'c', fuzzer_state_t)
-#define FUZZ_IOC_SET_STATE _IOW('a', 'd', fuzzer_state_t)
+#define FUZZ_IOC_GET_STATE _IOR('a', 'c', cpu_state_t)
+#define FUZZ_IOC_SET_STATE _IOW('a', 'd', cpu_state_t)
 #define FUZZ_IOC_OPEN_LOG _IO('a', 'e')
 #define FUZZ_IOC_CLOSE_LOG _IO('a', 'f')
 #define FUZZ_IOC_MOVE_NEXT_INSTR _IO('a', 'g')
@@ -6210,14 +6230,20 @@ static void __svm_exit(void)
 
 static long fuzz_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
-    switch (cmd) {
+    
+	preempt_disable();
+	int cpu = smp_processor_id();
+	cpu_state_t* fuzz_state = &global_fuzz_state.cpu_state[cpu];
+	preempt_enable();
+	
+	switch (cmd) {
     case FUZZ_IOC_GET_STATE:
-        if (copy_to_user((void __user *)arg, &fuzz_state, sizeof(fuzz_state)))
+        if (copy_to_user((void __user *)arg, fuzz_state, sizeof(cpu_state_t)))
             return -EFAULT;
         return 0;
 
     case FUZZ_IOC_SET_STATE:
-        if (copy_from_user(&fuzz_state, (void __user *)arg, sizeof(fuzz_state)))
+        if (copy_from_user(fuzz_state, (void __user *)arg, sizeof(cpu_state_t)))
             return -EFAULT;
 
         return 0;

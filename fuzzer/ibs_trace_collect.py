@@ -14,6 +14,7 @@ from pathlib import Path
 import ctypes
 import shlex
 import errno
+import threading
 
 
 
@@ -25,15 +26,16 @@ IBS_SUFFIX = ".csv"
 DEVICE_NAME = "/dev/svm_ibs_dev"
 MAX_INSN_LENGTH = 15
 
-#trace is dependent on CPU
-TRACE_PATH = "/sys/kernel/debug/ibs_logger/trace2"
+TRACE_BASE = "/sys/kernel/debug/ibs_logger/trace"
 POLL_SLEEP_SEC = 0.05
 
-FUZZ_IOC_GET_STATE = _IOR(ord('a'), ord('c'), FuzzerState)  
-FUZZ_IOC_SET_STATE = _IOW(ord('a'), ord('d'), FuzzerState)  
+FUZZ_IOC_GET_STATE = _IOR(ord('a'), ord('c'), FuzzerState)
+FUZZ_IOC_SET_STATE = _IOW(ord('a'), ord('d'), FuzzerState)
 FUZZ_IOC_OPEN_LOG = _IO(ord('a'), ord('e'))
 FUZZ_IOC_CLOSE_LOG = _IO(ord('a'), ord('f'))
 FUZZ_IOC_MOVE_NEXT_INSTR = _IO(ord('a'), ord('g'))
+
+stop_event = threading.Event()
 
 
 # ----------------------------
@@ -50,10 +52,14 @@ def reset_log_directory():
 
 def count_log_files() -> int:
     if not LOG_DIR.exists():
+        print("Log directory does not exist", file=sys.stderr)
         return 0
-    total = sum(1 for f in LOG_DIR.iterdir() if f.is_file())
-    avg_size = sum(f.stat().st_size for f in LOG_DIR.iterdir() if f.is_file()) / total if total > 0 else 0
+
+    files = [f for f in LOG_DIR.iterdir() if f.is_file()]
+    total = len(files)
+    avg_size = sum(f.stat().st_size for f in files) / total if total > 0 else 0
     print(f"Log directory contains {total} files, average size: {avg_size:.2f} bytes", file=sys.stderr)
+    return total
 
 def create_log_directory_if_missing():
     if not LOG_DIR.exists():
@@ -63,11 +69,9 @@ def check_disk_space():
     _, _, free = shutil.disk_usage(SSD_DIR)
     return free >= 10 * 1024**3
 
-
 def generate_filename(insn_bytes: bytes) -> str:
     encoded = "".join(f"\\x{b:02x}" for b in insn_bytes)
     return f"{IBS_PREFIX}{encoded}{IBS_SUFFIX}"
-
 
 def op_type_to_str(op_type: int) -> str:
     if op_type == IBS_OP_LOAD:
@@ -78,12 +82,14 @@ def op_type_to_str(op_type: int) -> str:
         return "branch"
     return "unknown"
 
-
 def read_exact_or_none(f, n: int) -> bytes | None:
     chunks = []
     total = 0
 
     while total < n:
+        if stop_event.is_set():
+            return None
+
         try:
             chunk = f.read(n - total)
         except OSError as e:
@@ -100,15 +106,21 @@ def read_exact_or_none(f, n: int) -> bytes | None:
     return b"".join(chunks)
 
 
-last_was_hpa = False
-def handle_hpa_record(rec: IbsHpaRecord, out) -> None:
-    global last_was_hpa
-    out.write(f"HPA: 0x{rec.hpa:016x}\n")
-    last_was_hpa = True
+# ----------------------------
+# Per-thread record handling
+# ----------------------------
 
-def handle_event_record(rec: IbsEventRecord, out) -> None:
-    global last_was_hpa
-    if last_was_hpa:
+class WorkerContext:
+    def __init__(self, core_id: int):
+        self.core_id = core_id
+        self.last_was_hpa = False
+
+def handle_hpa_record(ctx: WorkerContext, rec: IbsHpaRecord, out) -> None:
+    out.write(f"HPA: 0x{rec.hpa:016x}\n")
+    ctx.last_was_hpa = True
+
+def handle_event_record(ctx: WorkerContext, rec: IbsEventRecord, out) -> None:
+    if ctx.last_was_hpa:
         out.write(",".join([
             "rip","uop_cnt","phys_addr","lin_addr","branch_target_rip",
             "rax","rbx","rcx","rdx","rsi","rdi","r8","r9","r10","r11",
@@ -153,22 +165,22 @@ def handle_event_record(rec: IbsEventRecord, out) -> None:
         str(rec.op_brn_taken),
     ]) + "\n")
 
-    last_was_hpa = False
+    ctx.last_was_hpa = False
+
 
 # ----------------------------
 # Helpers: device state I/O
 # ----------------------------
 
 def open_device() -> int:
-    fd = os.open(DEVICE_NAME, os.O_RDWR)
-    return fd
+    return os.open(DEVICE_NAME, os.O_RDWR)
 
 def ioctl_set_state(fd: int, st: FuzzerState) -> None:
     rc = _ioctl(fd, FUZZ_IOC_SET_STATE, ctypes.byref(st))
     if rc < 0:
         e = ctypes.get_errno()
         raise OSError(e, f"ioctl(SET_STATE) failed: {os.strerror(e)}")
-    
+
 def ioctl_get_state(fd: int) -> FuzzerState:
     st = FuzzerState()
     rc = _ioctl(fd, FUZZ_IOC_GET_STATE, ctypes.byref(st))
@@ -188,13 +200,12 @@ def ioctl_close_log(fd: int) -> None:
     if rc < 0:
         e = ctypes.get_errno()
         raise OSError(e, f"ioctl(CLOSE_LOG) failed: {os.strerror(e)}")
-    
+
 def ioctl_move_next_instr(fd: int) -> None:
     rc = _ioctl(fd, FUZZ_IOC_MOVE_NEXT_INSTR, None)
     if rc < 0:
         e = ctypes.get_errno()
         raise OSError(e, f"ioctl(MOVE_NEXT_INSTR) failed: {os.strerror(e)}")
-    
 
 def default_reset_state() -> FuzzerState:
     st = FuzzerState()
@@ -243,8 +254,6 @@ def dump_fuzzer_state_pretty(st: FuzzerState) -> None:
         return f"len={insn.len} bytes=" + " ".join(f"\\{x:02x}" for x in b)
 
     print("========== FUZZER STATE ==========")
-
-    # pointers
     print("Pointers:")
     print(f"  fuzz_mem1_host : 0x{st.fuzz_mem1_host or 0:016x}")
     print(f"  fuzz_mem1_guest: 0x{st.fuzz_mem1_guest or 0:016x}")
@@ -252,26 +261,22 @@ def dump_fuzzer_state_pretty(st: FuzzerState) -> None:
     print(f"  fuzz_mem2_guest: 0x{st.fuzz_mem2_guest or 0:016x}")
     print()
 
-    # range
     print("Total Range:")
     print(f"  started : {bool(st.total_range.started)}")
     print()
 
-    # injection
     print("Injection:")
     print(f"  insn     : {insn_to_str(st.inj.i)}")
     print(f"  index    : {st.inj.index}")
     print(f"  last_len : {st.inj.last_len}")
     print()
 
-    # result
     print("Result:")
     print(f"  valid     : {st.result.valid}")
     print(f"  length    : {st.result.length}")
     print(f"  ecxeption : {st.result.ecxeption}")
     print()
 
-    # misc
     print("Execution:")
     op_map = {0: "START", 1: "INSTRUCTION", 2: "MICROOP"}
     print(f"  current_op    : {op_map.get(st.current_op)}")
@@ -279,7 +284,6 @@ def dump_fuzzer_state_pretty(st: FuzzerState) -> None:
     print(f"  file_open     : {bool(st.file_open)}")
     print()
 
-    # minimal useful VMCB snapshot
     print("Saved CPU State (VMCB excerpt):")
     print(f"  RIP     : 0x{st.saved_state.rip:016x}")
     print(f"  RSP     : 0x{st.saved_state.rsp:016x}")
@@ -308,21 +312,21 @@ def parse_qemu_script(script_path: Path) -> list[str]:
         lines.append(line)
 
     command_str = " ".join(lines)
-
     return shlex.split(command_str)
 
-
-def start_qemu(cmd: list[str]) -> subprocess.Popen:
+def start_qemu(cmd: list[str], core_id: int) -> subprocess.Popen:
+    # pin each QEMU process to one host CPU core
+    pinned_cmd = ["taskset", "-c", str(core_id)] + cmd
     return subprocess.Popen(
-        cmd,
-        stdin=subprocess.DEVNULL,   
+        pinned_cmd,
+        stdin=subprocess.DEVNULL,
         stdout=sys.stdout,
         stderr=sys.stderr,
-        start_new_session=True,    
+        start_new_session=True,
     )
 
 def kill_qemu(proc: subprocess.Popen, sig=signal.SIGTERM, grace_sec: float = 2.0) -> None:
-    if proc.poll() is not None:
+    if proc is None or proc.poll() is not None:
         return
 
     try:
@@ -342,82 +346,95 @@ def kill_qemu(proc: subprocess.Popen, sig=signal.SIGTERM, grace_sec: float = 2.0
     except ProcessLookupError:
         pass
 
+
 # ----------------------------
-# Main trace loop with timeout
+# Main per-core trace loop
 # ----------------------------
 
-def log_timeout_instruction(crash_log_path: Path, insn_bytes: bytes, note: str = "trace_pipe inactivity timeout") -> None:
+def log_timeout_instruction(crash_log_path: Path, insn_bytes: bytes, note: str = "trace inactivity timeout") -> None:
     crash_log_path.parent.mkdir(parents=True, exist_ok=True)
     ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
     insn_hex = insn_bytes.hex() if insn_bytes else "UNKNOWN"
-    # one-line append
     with open(crash_log_path, "a", buffering=1) as fp:
         fp.write(f"[{ts}] {note} insn={insn_hex}\n")
 
-
 def trace_loop_with_timeout(
+    core_id: int,
     device_fd: int,
     qemu_proc: subprocess.Popen,
     inactivity_timeout: float,
     on_timeout_state_path: Path,
-    resume: bool = False,
-    qemu_script : Path = None
+    resume: bool,
+    qemu_script: Path
 ) -> int:
-    try:
-        if not resume:
-            reset_log_directory()
-    except Exception as e:
-        print(f"Failed to reset log directory: {e}", file=sys.stderr)
-        return 1
+    trace_path = f"{TRACE_BASE}{core_id}"
+    ctx = WorkerContext(core_id)
 
-    ioctl_close_log(device_fd)  
+    try:
+        ioctl_close_log(device_fd)
+    except Exception:
+        pass
+
     ioctl_open_log(device_fd)
 
-    crash_log = LOG_DIR / "timeouts.log"
-    relay_fd = open(TRACE_PATH, "rb", buffering=0)
-    last_received = time.monotonic()
+    crash_log = LOG_DIR / f"timeouts_core{core_id}.log"
 
-    print(f"Starting fuzzer... (inactivity timeout: {inactivity_timeout}s)", file=sys.stderr)
+    try:
+        relay_fd = open(trace_path, "rb", buffering=0)
+    except Exception as e:
+        print(f"[core {core_id}] Failed to open {trace_path}: {e}", file=sys.stderr)
+        return 1
+
+    last_received = time.monotonic()
+    print(f"[core {core_id}] Starting trace loop on {trace_path} (timeout={inactivity_timeout}s)", file=sys.stderr)
 
     current_insn_bytes = None
     out = None
 
     try:
-        while True:
+        while not stop_event.is_set():
             now = time.monotonic()
 
-            # inactivity timeout check, try to restart
-            if now - last_received >= inactivity_timeout:
+            if inactivity_timeout > 0 and (now - last_received >= inactivity_timeout):
                 try:
                     st = ioctl_get_state(device_fd)
                     dump_state_to_file(st, on_timeout_state_path)
-                    print(f"Saved fuzz_state to {on_timeout_state_path}", file=sys.stderr)
+                    print(f"[core {core_id}] Saved fuzz_state to {on_timeout_state_path}", file=sys.stderr)
                 except Exception as e:
-                    print(f"ERROR: failed to GET/DUMP state on timeout: {e}", file=sys.stderr)
+                    st = None
+                    print(f"[core {core_id}] ERROR: failed to GET/DUMP state on timeout: {e}", file=sys.stderr)
 
-                print(f"TIMEOUT: no trace_pipe activity for {inactivity_timeout}s", file=sys.stderr)
+                print(f"[core {core_id}] TIMEOUT: no activity for {inactivity_timeout}s", file=sys.stderr)
+
                 try:
-                    log_timeout_instruction(crash_log, bytes(st.inj.i.bytes[:st.inj.i.len]))
-                    print(f"Logged timeout instruction to {crash_log}", file=sys.stderr)
+                    if st is not None:
+                        log_timeout_instruction(crash_log, bytes(st.inj.i.bytes[:st.inj.i.len]))
+                    else:
+                        log_timeout_instruction(crash_log, b"", note="timeout (state unavailable)")
                 except Exception as e:
-                    print(f"WARN: failed to log timeout instruction: {e}", file=sys.stderr)
+                    print(f"[core {core_id}] WARN: failed to log timeout instruction: {e}", file=sys.stderr)
 
                 if qemu_proc is not None:
-                    print("Stopping QEMU ...", file=sys.stderr)
+                    print(f"[core {core_id}] Stopping QEMU ...", file=sys.stderr)
                     kill_qemu(qemu_proc)
-                    
-                ioctl_move_next_instr(device_fd)
-                ioctl_close_log(device_fd)  
-                ioctl_open_log(device_fd)
 
                 try:
-                    qemu_proc = start_qemu(parse_qemu_script(qemu_script)) 
-                    print(f"Restarted QEMU (pid={qemu_proc.pid})", file=sys.stderr)
+                    ioctl_move_next_instr(device_fd)
+                    ioctl_close_log(device_fd)
+                    ioctl_open_log(device_fd)
                 except Exception as e:
-                    print(f"ERROR: failed to restart QEMU: {e}", file=sys.stderr)
+                    print(f"[core {core_id}] ERROR: failed to rotate instruction/log after timeout: {e}", file=sys.stderr)
                     relay_fd.close()
-                    return 2  # can't proceed without qemu
-                
+                    return 2
+
+                try:
+                    qemu_proc = start_qemu(parse_qemu_script(qemu_script), core_id)
+                    print(f"[core {core_id}] Restarted QEMU (pid={qemu_proc.pid})", file=sys.stderr)
+                except Exception as e:
+                    print(f"[core {core_id}] ERROR: failed to restart QEMU: {e}", file=sys.stderr)
+                    relay_fd.close()
+                    return 2
+
                 if out is not None:
                     out.close()
                     out = None
@@ -426,40 +443,42 @@ def trace_loop_with_timeout(
                 last_received = time.monotonic()
                 continue
 
-
             header_blob = read_exact_or_none(relay_fd, HEADER_SIZE)
             if header_blob is None:
                 time.sleep(POLL_SLEEP_SEC)
                 continue
-            
 
             hdr = IbsRecordHeader.from_buffer_copy(header_blob)
             if hdr.record_len < HEADER_SIZE:
-                st = ioctl_get_state(device_fd)
-                dump_state_to_file(st, on_timeout_state_path)
-                print(f"WARN: malformed record with len={hdr.record_len}, skipping", file=sys.stderr)
+                try:
+                    st = ioctl_get_state(device_fd)
+                    dump_state_to_file(st, on_timeout_state_path)
+                except Exception:
+                    pass
+                print(f"[core {core_id}] WARN: malformed record with len={hdr.record_len}, skipping", file=sys.stderr)
                 continue
 
             if hdr.record_type == IBS_REC_FINISH or not check_disk_space():
                 if not check_disk_space():
-                    print(f"ERROR: disk space low, stopping trace loop to avoid corruption.", file=sys.stderr)
+                    print(f"[core {core_id}] ERROR: disk space low, stopping.", file=sys.stderr)
                 else:
-                    print("Received FINISH record, stopping trace loop.", file=sys.stderr)
+                    print(f"[core {core_id}] Received FINISH record, stopping.", file=sys.stderr)
+
                 if out is not None:
                     out.close()
                 if qemu_proc is not None:
-                    print("Stopping QEMU ...", file=sys.stderr)
+                    print(f"[core {core_id}] Stopping QEMU ...", file=sys.stderr)
                     kill_qemu(qemu_proc)
                 relay_fd.close()
                 return 0
-            
-            if current_insn_bytes != bytes(hdr.instruction[:hdr.instruction_len]):
-                current_insn_bytes = bytes(hdr.instruction[:hdr.instruction_len])
+
+            insn_bytes = bytes(hdr.instruction[:hdr.instruction_len])
+            if current_insn_bytes != insn_bytes:
+                current_insn_bytes = insn_bytes
                 current_path = generate_filename(current_insn_bytes)
                 if out is not None:
                     out.close()
                 out = open(current_path, "w", buffering=1)
-                
 
             remaining = hdr.record_len - HEADER_SIZE
             body_blob = read_exact_or_none(relay_fd, remaining)
@@ -472,132 +491,152 @@ def trace_loop_with_timeout(
 
             if hdr.record_type == IBS_REC_HPA:
                 if hdr.record_len != HPA_SIZE:
-                    print(f"WARN: malformed HPA record with len={hdr.record_len}, skipping", file=sys.stderr)
+                    print(f"[core {core_id}] WARN: malformed HPA record with len={hdr.record_len}, skipping", file=sys.stderr)
                     continue
                 rec = IbsHpaRecord.from_buffer_copy(full_blob)
-                handle_hpa_record(rec, out)
+                handle_hpa_record(ctx, rec, out)
 
             elif hdr.record_type == IBS_REC_EVENT:
                 if hdr.record_len != EVENT_SIZE:
                     raise ValueError(
-                        f"EVENT record size mismatch: got {hdr.record_len}, expected {EVENT_SIZE}"
+                        f"[core {core_id}] EVENT record size mismatch: got {hdr.record_len}, expected {EVENT_SIZE}"
                     )
                 rec = IbsEventRecord.from_buffer_copy(full_blob)
-                handle_event_record(rec, out)
+                handle_event_record(ctx, rec, out)
 
             else:
-                print(f"WARN: unknown record type {hdr.record_type}, skipping", file=sys.stderr)
+                print(f"[core {core_id}] WARN: unknown record type {hdr.record_type}, skipping", file=sys.stderr)
                 continue
 
-
-            
     except KeyboardInterrupt:
-        st = ioctl_get_state(device_fd)
-        dump_state_to_file(st, on_timeout_state_path)
-        
-        if qemu_proc is not None:
-            print("Stopping QEMU ...", file=sys.stderr)
-            kill_qemu(qemu_proc)
+        stop_event.set()
+    finally:
+        if out is not None:
+            try:
+                out.close()
+            except Exception:
+                pass
+        try:
             relay_fd.close()
+        except Exception:
+            pass
+        if qemu_proc is not None:
+            kill_qemu(qemu_proc)
 
+    return 0
+
+
+# ----------------------------
+# Worker
+# ----------------------------
+
+def core_worker(core_id: int, args) -> None:
+    dev_fd = None
+    qemu_proc = None
+
+    state_path = Path(str(args.state_file).replace(".bin", f".core{core_id}.bin"))
+    qemu_script = Path(args.qemu_script)
+
+    try:
+        dev_fd = open_device()
+
+        if args.resume:
+            st = load_state_from_file(state_path)
+            ioctl_set_state(dev_fd, st)
+            create_log_directory_if_missing()
+            print(f"[core {core_id}] Resumed fuzz_state from {state_path}", file=sys.stderr)
+        else:
+            st = default_reset_state()
+            ioctl_set_state(dev_fd, st)
+            print(f"[core {core_id}] Fuzzer state reset successfully.", file=sys.stderr)
+
+        qemu_proc = start_qemu(parse_qemu_script(qemu_script), core_id)
+        print(f"[core {core_id}] Started QEMU via {qemu_script} (pid={qemu_proc.pid})", file=sys.stderr)
+
+        trace_loop_with_timeout(
+            core_id=core_id,
+            device_fd=dev_fd,
+            qemu_proc=qemu_proc,
+            inactivity_timeout=args.timeout,
+            on_timeout_state_path=state_path,
+            resume=args.resume,
+            qemu_script=qemu_script
+        )
+
+    except Exception as e:
+        print(f"[core {core_id}] Worker failed: {e}", file=sys.stderr)
+        stop_event.set()
+
+    finally:
+        if qemu_proc is not None:
+            try:
+                kill_qemu(qemu_proc)
+            except Exception:
+                pass
+        if dev_fd is not None:
+            try:
+                os.close(dev_fd)
+            except Exception:
+                pass
+
+
+# ----------------------------
+# Main
+# ----------------------------
+
+def get_available_cores() -> list[int]:
+    try:
+        return sorted(os.sched_getaffinity(0))
+    except Exception:
+        n = os.cpu_count() or 1
+        return list(range(n))
+
+def signal_handler(sig, frame):
+    print("\nReceived Ctrl+C, stopping all workers...", file=sys.stderr)
+    stop_event.set()
 
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--qemu-script", default="./../vms/qemu.sh", help="Path to qemu start script")
-    ap.add_argument("--timeout", type=float, default=10.0, help="Inactivity timeout (seconds) on trace_pipe; 0 disables")
+    ap.add_argument("--timeout", type=float, default=10.0, help="Inactivity timeout (seconds); 0 disables")
     ap.add_argument("--state-file", default="/mnt/truenas/ibs_log/fuzz_state.bin",
-                    help="Where to dump fuzz_state on timeout (and/or for periodic dumps)")
+                    help="Base path used to dump fuzz_state on timeout; per-core suffix is added")
     ap.add_argument("--resume", action="store_true",
-                    help="Resume from --state-file instead of resetting to defaults")
+                    help="Resume from per-core state files instead of resetting to defaults")
     ap.add_argument(
         "--save-state",
         nargs="?",
         const="/mnt/truenas/ibs_log/fuzz_state.bin",
         default=None,
-        help="Save fuzz state (optional path)"
+        help="Save fuzz state from one device fd and exit"
     )
-
-    ap.add_argument("--count-only", action="store_true", help="Only count records and exit (for testing)")
+    ap.add_argument("--count-only", action="store_true", help="Only count records and exit")
+    ap.add_argument("--cores", default=None,
+                    help="Comma-separated core list, e.g. 0,1,2,3. Default: all available cores")
 
     args = ap.parse_args()
 
-    try:
-        dev_fd = open_device()
-    except OSError as e:
-        print(f"Failed to open {DEVICE_NAME}: {e}", file=sys.stderr)
-        return 1
-
-    state_path = Path(args.state_file)
+    if args.count_only:
+        count_log_files()
+        return 0
 
     if args.save_state:
+        dev_fd = None
         try:
+            dev_fd = open_device()
             save_state(dev_fd, Path(args.save_state))
             print(f"Saved fuzz_state to {args.save_state}", file=sys.stderr)
             return 0
         except Exception as e:
             print(f"Failed to save state: {e}", file=sys.stderr)
-            os.close(dev_fd)
             return 1
-        
-    if args.count_only:
-        count_log_files()
-        os.close(dev_fd)
-        return 0
+        finally:
+            if dev_fd is not None:
+                try:
+                    os.close(dev_fd)
+                except Exception:
+                    pass
 
-    try:
-        if args.resume:
-            st = load_state_from_file(state_path)
-            dump_fuzzer_state_pretty(st)
-            ioctl_set_state(dev_fd, st)
-            create_log_directory_if_missing()
-            print(f"Resumed fuzz_state from {state_path}", file=sys.stderr)
-        else:
-            st = default_reset_state()
-            ioctl_set_state(dev_fd, st)
-            print("Fuzzer state reset successfully.", file=sys.stderr)
-    except Exception as e:
-        print(f"Failed to SET state: {e}", file=sys.stderr)
-        os.close(dev_fd)
-        return 1
-
-    qemu_proc = None
-    qemu_script = Path(args.qemu_script)
-    try:
-        qemu_proc = start_qemu(parse_qemu_script(qemu_script))
-        print(f"Started QEMU via {qemu_script} (pid={qemu_proc.pid})", file=sys.stderr)
-    except Exception as e:
-        print(f"Failed to start QEMU: {e}", file=sys.stderr)
-        os.close(dev_fd)
-        return 1
-        
-    rc = trace_loop_with_timeout(
-        device_fd=dev_fd,
-        qemu_proc=qemu_proc,
-        inactivity_timeout=args.timeout,
-        on_timeout_state_path=state_path,
-        resume=args.resume,
-        qemu_script=qemu_script
-    )
-
-    try:
-        if qemu_proc is not None and qemu_proc.poll() is None:
-            kill_qemu(qemu_proc)
-    except Exception:
-        pass
-
-    try:
-        os.close(dev_fd)
-    except Exception:
-        pass
-
-    return rc
-
-
-if __name__ == "__main__":
-    if not check_ssd_mounted():
-        print(f"ERROR: SSD directory {SSD_DIR} is not mounted or writable.", file=sys.stderr)
-        raise SystemExit(1)
-    
     try:
         subprocess.run(
             ["sudo", "killall", "qemu-system-x86_64"],
@@ -608,5 +647,49 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"Warning: failed to kill existing qemu instances: {e}", file=sys.stderr)
 
-    os.sched_setaffinity(0, {2})
+    if not args.resume:
+        try:
+            reset_log_directory()
+        except Exception as e:
+            print(f"Failed to reset log directory: {e}", file=sys.stderr)
+            return 1
+    else:
+        create_log_directory_if_missing()
+
+    if args.cores:
+        cores = sorted({int(x.strip()) for x in args.cores.split(",") if x.strip()})
+    else:
+        cores = get_available_cores()
+
+    print(f"Using cores: {cores}", file=sys.stderr)
+
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+
+    threads = []
+    for core_id in cores:
+        t = threading.Thread(target=core_worker, args=(core_id, args), name=f"core-{core_id}", daemon=True)
+        t.start()
+        threads.append(t)
+
+    try:
+        while any(t.is_alive() for t in threads):
+            for t in threads:
+                t.join(timeout=0.2)
+            if stop_event.is_set():
+                break
+    except KeyboardInterrupt:
+        stop_event.set()
+
+    for t in threads:
+        t.join()
+
+    return 0
+
+
+if __name__ == "__main__":
+    if not check_ssd_mounted():
+        print(f"ERROR: SSD directory {SSD_DIR} is not mounted or writable.", file=sys.stderr)
+        raise SystemExit(1)
+
     raise SystemExit(main())

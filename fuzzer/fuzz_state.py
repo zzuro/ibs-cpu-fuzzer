@@ -97,6 +97,27 @@ class Result(ctypes.Structure):
         ("ecxeption", ctypes.c_uint32),
     ]
 
+class Regs(ctypes.Structure):
+    _fields_ = [
+        ("rax", ctypes.c_uint64),
+        ("rbx", ctypes.c_uint64),
+        ("rcx", ctypes.c_uint64),
+        ("rdx", ctypes.c_uint64),
+        ("rsi", ctypes.c_uint64),
+        ("rdi", ctypes.c_uint64),
+        ("r8", ctypes.c_uint64),
+        ("r9", ctypes.c_uint64),
+        ("r10", ctypes.c_uint64),
+        ("r11", ctypes.c_uint64),
+        ("r12", ctypes.c_uint64),
+        ("r13", ctypes.c_uint64),
+        ("r14", ctypes.c_uint64),
+        ("r15", ctypes.c_uint64),
+        ("rbp", ctypes.c_uint64),
+        ("rsp", ctypes.c_uint64),
+        ("rflags", ctypes.c_uint64),
+    ]
+
 
 class FuzzerState(ctypes.Structure):
     _fields_ = [
@@ -105,13 +126,16 @@ class FuzzerState(ctypes.Structure):
         ("fuzz_mem2_host", ctypes.c_void_p),
         ("fuzz_mem2_guest", ctypes.c_void_p),
 
-        ("total_range", Range),
         ("inj", Inj),
         ("result", Result),
+        ("search_range", Range),
 
         ("current_op", ctypes.c_int),      
         ("fetch_counter", ctypes.c_uint64),
         ("per_instruction_counter", ctypes.c_uint64),
+
+        ("saved_regs", Regs),
+        ("hpa_mapping", ctypes.c_uint64 * 512),
 
         ("saved_state", VmcbSaveArea),
 
