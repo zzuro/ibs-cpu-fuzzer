@@ -10,6 +10,8 @@ use config::Config;
 use discovery::collect_csv_files;
 use state::AnalyzerState;
 use writer::write_finding;
+use std::fs::OpenOptions;
+use std::io::Write;
 
 use indicatif::{ProgressBar, ProgressStyle};
 
@@ -32,6 +34,11 @@ fn main() -> Result<()> {
             .unwrap()
     );
 
+    let mut fail_log = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(config.findings_dir.join("/mnt/truenas/failed_files.log"))?;
+
 
     for file in files.iter() {
         if state.has_processed(file) {
@@ -42,7 +49,6 @@ fn main() -> Result<()> {
         match analyze_csv(file) {
             Ok(Some(finding)) => {
                 write_finding(&config.findings_dir, &finding)?;
-                println!("  -> finding written");
                 state.mark_processed(file);
                 state.save(&config.state_file)?;
             }
@@ -51,7 +57,12 @@ fn main() -> Result<()> {
                 state.save(&config.state_file)?;
             }
             Err(err) => {
-                eprintln!("  -> failed: {err}");
+                writeln!(
+                    fail_log,
+                    "{} -> {}",
+                    file.display(),
+                    err
+                )?;
             }
         }
         pb.inc(1);

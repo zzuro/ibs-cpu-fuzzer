@@ -1121,6 +1121,8 @@ static void init_vmcb(struct kvm_vcpu *vcpu)
 	 * We intercept those #GP and allow access to them anyway
 	 * as VMware does.
 	 */
+
+	enable_vmware_backdoor = true;
 	if (enable_vmware_backdoor)
 		set_exception_intercept(svm, GP_VECTOR);
 
@@ -1933,7 +1935,7 @@ static void svm_set_dr7(struct kvm_vcpu *vcpu, unsigned long value)
 	vmcb_mark_dirty(svm->vmcb, VMCB_DR);
 }
 
-#define REGISTER_VALUE 			0x9900000000 
+static uint64_t REGISTER_VALUE = 0x9900000000;
 #define GUEST_PHYS_ADDR_START 	0x00400000 
 #define GUEST_PHYS_ADDR_END 	0x005FFFFF
 #define GUEST_PHYS_PAGE_SIZE 	((GUEST_PHYS_ADDR_END - GUEST_PHYS_ADDR_START + 1)/PAGE_SIZE)
@@ -6203,6 +6205,8 @@ static void __svm_exit(void)
 #define FUZZ_IOC_OPEN_LOG _IO('a', 'e')
 #define FUZZ_IOC_CLOSE_LOG _IO('a', 'f')
 #define FUZZ_IOC_MOVE_NEXT_INSTR _IO('a', 'g')
+#define FUZZ_IOC_SET_REGISTER_VALUE _IOW('a', 'h', uint64_t)
+
 
 static long fuzz_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
@@ -6228,6 +6232,11 @@ static long fuzz_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 
 	case FUZZ_IOC_MOVE_NEXT_INSTR:
 		move_next_instruction();
+		return 0;
+
+	case FUZZ_IOC_SET_REGISTER_VALUE:
+		if (copy_from_user(&REGISTER_VALUE, (void __user *)arg, sizeof(REGISTER_VALUE)))
+			return -EFAULT;
 		return 0;
     default:
         return -EINVAL;
