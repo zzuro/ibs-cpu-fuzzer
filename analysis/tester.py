@@ -319,13 +319,21 @@ def main() -> int:
 
     
     it = LOG_DIR.iterdir()
-
-    first_file = next(it)
-    for _ in range(3):
-        try:
-            first_file = next(it)
-        except StopIteration:
+    
+    # Find the first subdirectory
+    first_subdir = None
+    for item in it:
+        if item.is_dir():
+            first_subdir = item
             break
+    
+    if first_subdir is None:
+        print(f"No subdirectories found in {LOG_DIR}", file=sys.stderr)
+        os.close(dev_fd)
+        return 1
+    
+    # Get the first log file from the subdirectory
+    first_file = next(first_subdir.iterdir())
 
     with first_file.open() as f:
         data = json.load(f) 
