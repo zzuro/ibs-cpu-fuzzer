@@ -1,8 +1,10 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::collections::hash_map::DefaultHasher;
 use std::fmt;
+use std::fs;
+use std::hash::{Hash, Hasher};
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ResultEntry {
@@ -21,7 +23,6 @@ pub struct Finding {
     pub source_file: String,
     pub res_entry: Vec<ResultEntry>,
 }
-
 
 impl fmt::Display for ResultEntry {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -59,7 +60,13 @@ pub fn write_finding(output_dir: &Path, finding: &Finding) -> Result<()> {
         .and_then(|s| s.to_str())
         .unwrap_or("unknown");
 
-    let output_file: PathBuf = output_dir.join(format!("{file_stem}_finding.json"));
+    let mut hasher = DefaultHasher::new();
+    finding.source_file.hash(&mut hasher);
+    let path_hash = hasher.finish();
+
+    let output_file: PathBuf =
+        output_dir.join(format!("{file_stem}_{path_hash:016x}_finding.json"));
+
     let json = serde_json::to_string_pretty(finding)?;
     fs::write(output_file, json)?;
 
