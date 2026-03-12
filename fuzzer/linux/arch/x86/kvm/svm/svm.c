@@ -1120,6 +1120,8 @@ static void init_vmcb(struct kvm_vcpu *vcpu)
 	 * We intercept those #GP and allow access to them anyway
 	 * as VMware does.
 	 */
+
+	enable_vmware_backdoor = true;
 	if (enable_vmware_backdoor)
 		set_exception_intercept(svm, GP_VECTOR);
 
@@ -2408,6 +2410,7 @@ static int pf_interception(struct kvm_vcpu *vcpu)
 			reset_state(vcpu);
 		}
 	}else{
+		pr_info("[Fuzzer] Page fault at address: 0x%llx, expected: 0x%llx\n", cr2, (uint64_t)fuzz_state.fuzz_mem2_guest);
 		if(!move_next_instruction())
 		{
 			pr_info("[Fuzzer] Finished fuzzing all instructions in the range\n");

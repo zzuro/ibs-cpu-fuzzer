@@ -407,6 +407,8 @@ def trace_loop_with_timeout(
                     kill_qemu(qemu_proc)
                     
                 ioctl_move_next_instr(device_fd)
+                ioctl_close_log(device_fd)  
+                ioctl_open_log(device_fd)
 
                 try:
                     qemu_proc = start_qemu(parse_qemu_script(qemu_script)) 
@@ -490,6 +492,9 @@ def trace_loop_with_timeout(
 
             
     except KeyboardInterrupt:
+        st = ioctl_get_state(device_fd)
+        dump_state_to_file(st, on_timeout_state_path)
+        
         if qemu_proc is not None:
             print("Stopping QEMU ...", file=sys.stderr)
             kill_qemu(qemu_proc)
