@@ -370,13 +370,6 @@ def trace_loop_with_timeout(
     trace_path = f"{TRACE_BASE}{core_id}"
     ctx = WorkerContext(core_id)
 
-    try:
-        ioctl_close_log(device_fd)
-    except Exception:
-        pass
-
-    ioctl_open_log(device_fd)
-
     crash_log = LOG_DIR / f"timeouts_core{core_id}.log"
 
     try:
@@ -420,8 +413,6 @@ def trace_loop_with_timeout(
 
                 try:
                     ioctl_move_next_instr(device_fd)
-                    ioctl_close_log(device_fd)
-                    ioctl_open_log(device_fd)
                 except Exception as e:
                     print(f"[core {core_id}] ERROR: failed to rotate instruction/log after timeout: {e}", file=sys.stderr)
                     relay_fd.close()
@@ -530,15 +521,14 @@ def trace_loop_with_timeout(
 # Worker
 # ----------------------------
 
-def core_worker(core_id: int, args) -> None:
-    dev_fd = None
+def core_worker(core_id: int, device_fd : int,args) -> None:
+    dev_fd = device_fd
     qemu_proc = None
 
     state_path = Path(str(args.state_file).replace(".bin", f".core{core_id}.bin"))
     qemu_script = Path(args.qemu_script)
 
     try:
-        dev_fd = open_device()
 
         if args.resume:
             st = load_state_from_file(state_path)
@@ -676,9 +666,19 @@ def main() -> int:
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
+
+    device_fd = open_device()
+
+    try:
+        ioctl_close_log(device_fd)
+    except Exception:
+        pass
+
+    ioctl_open_log(device_fd)
+
     threads = []
     for core_id in cores:
-        t = threading.Thread(target=core_worker, args=(core_id, args), name=f"core-{core_id}", daemon=True)
+        t = threading.Thread(target=core_worker, args=(core_id, device_fd, args), name=f"core-{core_id}", daemon=True)
         t.start()
         threads.append(t)
 
