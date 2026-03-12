@@ -608,7 +608,7 @@ def main() -> int:
         nargs="?",
         const="/mnt/truenas/ibs_log/fuzz_state.bin",
         default=None,
-        help="Save fuzz state from one device fd and exit"
+        help="Save fuzz state for all selected cores and exit"
     )
     ap.add_argument("--count-only", action="store_true", help="Only count records and exit")
     ap.add_argument("--cores", default=None,
@@ -620,22 +620,39 @@ def main() -> int:
         count_log_files()
         return 0
 
+    if args.cores:
+        cores = sorted({int(x.strip()) for x in args.cores.split(",") if x.strip()})
+    else:
+        cores = get_available_cores()
+
+    print(f"Using cores: {cores}", file=sys.stderr)
+
     if args.save_state:
-        dev_fd = None
-        try:
-            dev_fd = open_device()
-            save_state(dev_fd, Path(args.save_state))
-            print(f"Saved fuzz_state to {args.save_state}", file=sys.stderr)
-            return 0
-        except Exception as e:
-            print(f"Failed to save state: {e}", file=sys.stderr)
-            return 1
-        finally:
-            if dev_fd is not None:
-                try:
-                    os.close(dev_fd)
-                except Exception:
-                    pass
+        base_path = Path(args.save_state)
+        had_error = False
+
+        for core_id in cores:
+            dev_fd = None
+            try:
+                os.sched_setaffinity(0, {core_id})
+                dev_fd = open_device()
+
+                core_state_path = Path(str(base_path).replace(".bin", f".core{core_id}.bin"))
+                save_state(dev_fd, core_state_path)
+                print(f"[core {core_id}] Saved fuzz_state to {core_state_path}", file=sys.stderr)
+
+            except Exception as e:
+                had_error = True
+                print(f"[core {core_id}] Failed to save state: {e}", file=sys.stderr)
+
+            finally:
+                if dev_fd is not None:
+                    try:
+                        os.close(dev_fd)
+                    except Exception:
+                        pass
+
+        return 1 if had_error else 0
 
     try:
         subprocess.run(
@@ -655,13 +672,6 @@ def main() -> int:
             return 1
     else:
         create_log_directory_if_missing()
-
-    if args.cores:
-        cores = sorted({int(x.strip()) for x in args.cores.split(",") if x.strip()})
-    else:
-        cores = get_available_cores()
-
-    print(f"Using cores: {cores}", file=sys.stderr)
 
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
@@ -685,7 +695,6 @@ def main() -> int:
         t.join()
 
     return 0
-
 
 if __name__ == "__main__":
     if not check_ssd_mounted():
