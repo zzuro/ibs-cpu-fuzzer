@@ -26,7 +26,7 @@ IBS_SUFFIX = ".csv"
 DEVICE_NAME = "/dev/svm_ibs_dev"
 MAX_INSN_LENGTH = 15
 
-TRACE_BASE = "/sys/kernel/debug/ibs_logger/trace"
+TRACE_BASE = "/sys/kernel/debug/ibs_logger/cpu"
 POLL_SLEEP_SEC = 0.05
 
 FUZZ_IOC_GET_STATE = _IOR(ord('a'), ord('c'), FuzzerState)
@@ -34,6 +34,7 @@ FUZZ_IOC_SET_STATE = _IOW(ord('a'), ord('d'), FuzzerState)
 FUZZ_IOC_OPEN_LOG = _IO(ord('a'), ord('e'))
 FUZZ_IOC_CLOSE_LOG = _IO(ord('a'), ord('f'))
 FUZZ_IOC_MOVE_NEXT_INSTR = _IO(ord('a'), ord('g'))
+FUZZ_IOC_RESET_STATE = _IO(ord('a'), ord('i'))
 
 stop_event = threading.Event()
 
@@ -206,17 +207,23 @@ def ioctl_move_next_instr(fd: int) -> None:
     if rc < 0:
         e = ctypes.get_errno()
         raise OSError(e, f"ioctl(MOVE_NEXT_INSTR) failed: {os.strerror(e)}")
+    
+def ioctl_reset_state(fd: int) -> None:
+    rc = _ioctl(fd, FUZZ_IOC_RESET_STATE, None)
+    if rc < 0:
+        e = ctypes.get_errno()
+        raise OSError(e, f"ioctl(RESET_STATE) failed: {os.strerror(e)}")
 
 def default_reset_state() -> FuzzerState:
     st = FuzzerState()
 
-    st.total_range.start.len = 0
-    st.total_range.end.len = 0
+    st.search_range.start.len = 0
+    st.search_range.end.len = 0
     for i in range(MAX_INSN_LENGTH):
-        st.total_range.start.bytes[i] = 0x00
-        st.total_range.end.bytes[i] = 0xFF
+        st.search_range.start.bytes[i] = 0x00
+        st.search_range.end.bytes[i] = 0xFF
 
-    st.total_range.started = False
+    st.search_range.started = False
 
     st.inj.i.len = 1
     st.inj.index = 0
@@ -315,10 +322,8 @@ def parse_qemu_script(script_path: Path) -> list[str]:
     return shlex.split(command_str)
 
 def start_qemu(cmd: list[str], core_id: int) -> subprocess.Popen:
-    # pin each QEMU process to one host CPU core
-    pinned_cmd = ["taskset", "-c", str(core_id)] + cmd
     return subprocess.Popen(
-        pinned_cmd,
+        cmd,
         stdin=subprocess.DEVNULL,
         stdout=sys.stdout,
         stderr=sys.stderr,
@@ -367,7 +372,7 @@ def trace_loop_with_timeout(
     resume: bool,
     qemu_script: Path
 ) -> int:
-    trace_path = f"{TRACE_BASE}{core_id}"
+    trace_path = f"{TRACE_BASE}{core_id}/trace{core_id}"
     ctx = WorkerContext(core_id)
 
     crash_log = LOG_DIR / f"timeouts_core{core_id}.log"
@@ -525,6 +530,7 @@ def core_worker(core_id: int, device_fd : int,args) -> None:
     dev_fd = device_fd
     qemu_proc = None
 
+    os.sched_setaffinity(0, {core_id})
     state_path = Path(str(args.state_file).replace(".bin", f".core{core_id}.bin"))
     qemu_script = Path(args.qemu_script)
 
@@ -538,6 +544,7 @@ def core_worker(core_id: int, device_fd : int,args) -> None:
         else:
             st = default_reset_state()
             ioctl_set_state(dev_fd, st)
+            ioctl_reset_state(dev_fd)
             print(f"[core {core_id}] Fuzzer state reset successfully.", file=sys.stderr)
 
         qemu_proc = start_qemu(parse_qemu_script(qemu_script), core_id)

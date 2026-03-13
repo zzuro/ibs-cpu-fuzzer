@@ -1943,7 +1943,8 @@ static uint64_t REGISTER_VALUE = 0x9900000000;
 #define MAX_INSTRUCTION_COUNT 6000
 #define PER_INSTRUCTION_COUNTER 5
 
-static DEFINE_MUTEX(fuzz_mutex);
+static DEFINE_SPINLOCK(setup_lock);
+static DEFINE_SPINLOCK(range_lock);
 
 //number of base instruction bytes in each sub range
 #define RANGE_BYTES 1
@@ -2311,7 +2312,8 @@ static void init_inj(insn_t* new_insn, inj_t* inj)
 static bool move_next_range(void)
 {
 	bool result = true;
-	mutex_lock(&fuzz_mutex);
+	unsigned long flags;
+	spin_lock_irqsave(&range_lock, flags);
 
 	preempt_disable();
 	int cpu = smp_processor_id();
@@ -2344,7 +2346,7 @@ static bool move_next_range(void)
 		}
 	}
 
-	mutex_unlock(&fuzz_mutex);
+	spin_unlock_irqrestore(&range_lock, flags);
 	return result;
 }
 
@@ -2442,7 +2444,8 @@ static void setup_fuzzer(struct kvm_vcpu *vcpu)
 		fuzz_state->hpa_mapping[(i - GUEST_PHYS_ADDR_START) / PAGE_SIZE] = map.pfn << PAGE_SHIFT;
 	}
 
-	mutex_lock(&fuzz_mutex);
+	unsigned long flags;
+	spin_lock_irqsave(&setup_lock, flags);
 	//this is the global state, which only needs to be initialized once
 	if(!global_fuzz_state.total_range.started) {
 		copy_instr(&global_fuzz_state.range_marker, &global_fuzz_state.total_range.start);
@@ -2452,8 +2455,9 @@ static void setup_fuzzer(struct kvm_vcpu *vcpu)
 		for(int i = 0; i < MAX_CPU_COUNT; i++) {
 			global_fuzz_state.cpu_state[i].search_range.started = false;
 		}
+		move_next_range();
 	}
-	mutex_unlock(&fuzz_mutex);
+	spin_unlock_irqrestore(&setup_lock, flags);
 
 	fuzz_state->inj.i.len = 1;
 	fuzz_state->current_op = INSTRUCTION;
@@ -6226,6 +6230,7 @@ static void __svm_exit(void)
 #define FUZZ_IOC_CLOSE_LOG _IO('a', 'f')
 #define FUZZ_IOC_MOVE_NEXT_INSTR _IO('a', 'g')
 #define FUZZ_IOC_SET_REGISTER_VALUE _IOW('a', 'h', uint64_t)
+#define FUZZ_IOC_RESET_STATE _IO('a', 'i')
 
 
 static long fuzz_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
@@ -6263,6 +6268,10 @@ static long fuzz_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	case FUZZ_IOC_SET_REGISTER_VALUE:
 		if (copy_from_user(&REGISTER_VALUE, (void __user *)arg, sizeof(REGISTER_VALUE)))
 			return -EFAULT;
+		return 0;
+
+	case FUZZ_IOC_RESET_STATE:
+		global_fuzz_state.total_range.started = false;
 		return 0;
     default:
         return -EINVAL;

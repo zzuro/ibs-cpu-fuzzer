@@ -3,28 +3,46 @@
 #include <linux/slab.h>
 #include <linux/relay.h>
 #include <linux/debugfs.h>
+#include <linux/preempt.h>
+#include <linux/smp.h>
 
 #include "svm.h"
 #include "ibs_logger.h"
 
-static struct rchan *ibs_chan;
-static struct dentry *ibs_dbg_dir;
+#define IBS_MAX_CPUS 32
 
+static struct rchan *ibs_chan[IBS_MAX_CPUS];
+static struct dentry *ibs_dbg_dir[IBS_MAX_CPUS];
+static struct dentry *ibs_root_dir;
 
-static __always_inline uint64_t __read_msr(uint32_t msr_register) {
-    uint64_t msr_value;
-    uint32_t low, high;
+static __always_inline uint64_t __read_msr(uint32_t msr_register)
+{
+	uint64_t msr_value;
+	uint32_t low, high;
 
-    asm volatile(
-        "rdmsr"
-        : "=a"(low), "=d"(high)  // Output operands
-        : "c"(msr_register)      // Input operand
-    );
+	asm volatile(
+		"rdmsr"
+		: "=a"(low), "=d"(high)
+		: "c"(msr_register)
+	);
 
-    msr_value = ((uint64_t)high << 32) | low;
-    return msr_value;
+	msr_value = ((uint64_t)high << 32) | low;
+	return msr_value;
 }
 
+static __always_inline int ibs_this_cpu(void)
+{
+	int cpu;
+
+	preempt_disable();
+	cpu = smp_processor_id();
+	preempt_enable();
+
+	if (cpu < 0 || cpu >= IBS_MAX_CPUS)
+		return -1;
+
+	return cpu;
+}
 
 static struct dentry *ibs_create_buf_file(const char *filename,
 					  struct dentry *parent,
@@ -48,51 +66,92 @@ static struct rchan_callbacks ibs_relay_callbacks = {
 	.remove_buf_file = ibs_remove_buf_file,
 };
 
-static __always_inline void ibs_relay_write(const void *data, size_t len)
+static __always_inline void ibs_relay_write_cpu(int cpu, const void *data, size_t len)
 {
-	if (!ibs_chan || !data || !len)
+	if (cpu < 0 || cpu >= IBS_MAX_CPUS || !data || !len)
 		return;
 
-	relay_write(ibs_chan, data, len);
+	if (!ibs_chan[cpu])
+		return;
+
+	relay_write(ibs_chan[cpu], data, len);
 }
 
 int ibs_log_open(void)
 {
-	if (ibs_chan)
+	int cpu;
+	char name[16];
+
+	if (ibs_root_dir)
 		return 0;
 
-	ibs_dbg_dir = debugfs_create_dir(IBS_RELAY_DIR, NULL);
-	if (IS_ERR_OR_NULL(ibs_dbg_dir)) {
-		pr_err("ibs: failed to create debugfs dir\n");
-		ibs_dbg_dir = NULL;
+	for (cpu = 0; cpu < IBS_MAX_CPUS; cpu++) {
+		ibs_chan[cpu] = NULL;
+		ibs_dbg_dir[cpu] = NULL;
+	}
+
+	ibs_root_dir = debugfs_create_dir(IBS_RELAY_DIR, NULL);
+	if (IS_ERR_OR_NULL(ibs_root_dir)) {
+		pr_err("ibs: failed to create root debugfs dir\n");
+		ibs_root_dir = NULL;
 		return -ENOMEM;
 	}
 
-	ibs_chan = relay_open(IBS_RELAY_BASENAME,
-			      ibs_dbg_dir,
-			      IBS_SUBBUF_SIZE,
-			      IBS_N_SUBBUFS,
-			      &ibs_relay_callbacks,
-			      NULL);
-	if (!ibs_chan) {
-		pr_err("ibs: relay_open failed\n");
-		debugfs_remove_recursive(ibs_dbg_dir);
-		ibs_dbg_dir = NULL;
-		return -ENOMEM;
+	for (cpu = 0; cpu < IBS_MAX_CPUS; cpu++) {
+		snprintf(name, sizeof(name), "cpu%d", cpu);
+
+		ibs_dbg_dir[cpu] = debugfs_create_dir(name, ibs_root_dir);
+		if (IS_ERR_OR_NULL(ibs_dbg_dir[cpu])) {
+			pr_err("ibs: failed to create debugfs dir for cpu %d\n", cpu);
+			ibs_dbg_dir[cpu] = NULL;
+			goto err;
+		}
+
+		ibs_chan[cpu] = relay_open(IBS_RELAY_BASENAME,
+					   ibs_dbg_dir[cpu],
+					   IBS_SUBBUF_SIZE,
+					   IBS_N_SUBBUFS,
+					   &ibs_relay_callbacks,
+					   NULL);
+		if (!ibs_chan[cpu]) {
+			pr_err("ibs: relay_open failed for cpu %d\n", cpu);
+			goto err;
+		}
 	}
 
-
-	pr_info("ibs: relay binary logging enabled at /sys/kernel/debug/%s/\n",
+	pr_info("ibs: relay binary logging enabled at /sys/kernel/debug/%s/cpu*/\n",
 		IBS_RELAY_DIR);
 	return 0;
-}
 
+err:
+	for (cpu = 0; cpu < IBS_MAX_CPUS; cpu++) {
+		if (ibs_chan[cpu]) {
+			relay_close(ibs_chan[cpu]);
+			ibs_chan[cpu] = NULL;
+		}
+	}
+
+	if (ibs_root_dir) {
+		debugfs_remove_recursive(ibs_root_dir);
+		ibs_root_dir = NULL;
+	}
+
+	for (cpu = 0; cpu < IBS_MAX_CPUS; cpu++)
+		ibs_dbg_dir[cpu] = NULL;
+
+	return -ENOMEM;
+}
 
 void ibs_log_hpa(uint64_t *hpa, size_t len, uint8_t *raw_instr, size_t raw_instr_len)
 {
 	size_t i;
+	int cpu;
 
-	if (!ibs_chan || !hpa)
+	if (!hpa)
+		return;
+
+	cpu = ibs_this_cpu();
+	if (cpu < 0 || !ibs_chan[cpu])
 		return;
 
 	for (i = 0; i < len; i++) {
@@ -103,26 +162,29 @@ void ibs_log_hpa(uint64_t *hpa, size_t len, uint8_t *raw_instr, size_t raw_instr
 				.instruction_len = raw_instr_len,
 				.instruction = {0},
 			},
-			.hpa         = hpa[i],
+			.hpa = hpa[i],
 		};
+
 		memcpy(rec.hdr.instruction, raw_instr, raw_instr_len);
 		rec.hdr.record_len = sizeof(rec);
-		ibs_relay_write(&rec, sizeof(rec));
+		ibs_relay_write_cpu(cpu, &rec, sizeof(rec));
 	}
 
-	struct ibs_hpa_record rec = {
+	{
+		struct ibs_hpa_record rec = {
 			.hdr = {
 				.record_type = IBS_REC_HPA,
 				.record_len = 0,
 				.instruction_len = raw_instr_len,
 				.instruction = {0},
 			},
-			.hpa         = __read_msr(0xC0010117), //HSAVE_PA
-	};
+			.hpa = __read_msr(0xC0010117), /* HSAVE_PA */
+		};
 
-	memcpy(rec.hdr.instruction, raw_instr, raw_instr_len);
-	rec.hdr.record_len = sizeof(rec);
-	ibs_relay_write(&rec, sizeof(rec));
+		memcpy(rec.hdr.instruction, raw_instr, raw_instr_len);
+		rec.hdr.record_len = sizeof(rec);
+		ibs_relay_write_cpu(cpu, &rec, sizeof(rec));
+	}
 }
 
 void ibs_log_finish(void)
@@ -133,27 +195,36 @@ void ibs_log_finish(void)
 		.instruction_len = 0,
 		.instruction = {0},
 	};
+	int cpu;
 
 	rec.record_len = sizeof(rec);
-	if (!ibs_chan)
+
+	cpu = ibs_this_cpu();
+	if (cpu < 0 || !ibs_chan[cpu])
 		return;
 
-	ibs_relay_write(&rec, sizeof(rec));
+	ibs_relay_write_cpu(cpu, &rec, sizeof(rec));
 }
-
 
 void ibs_log_close(void)
 {
-	if (ibs_chan) {
-		relay_flush(ibs_chan);
-		relay_close(ibs_chan);
-		ibs_chan = NULL;
+	int cpu;
+
+	for (cpu = 0; cpu < IBS_MAX_CPUS; cpu++) {
+		if (ibs_chan[cpu]) {
+			relay_flush(ibs_chan[cpu]);
+			relay_close(ibs_chan[cpu]);
+			ibs_chan[cpu] = NULL;
+		}
 	}
 
-	if (ibs_dbg_dir) {
-		debugfs_remove_recursive(ibs_dbg_dir);
-		ibs_dbg_dir = NULL;
+	if (ibs_root_dir) {
+		debugfs_remove_recursive(ibs_root_dir);
+		ibs_root_dir = NULL;
 	}
+
+	for (cpu = 0; cpu < IBS_MAX_CPUS; cpu++)
+		ibs_dbg_dir[cpu] = NULL;
 }
 
 void ibs_log_event(uint64_t rip_value, uint64_t uop_cnt,
@@ -167,12 +238,13 @@ void ibs_log_event(uint64_t rip_value, uint64_t uop_cnt,
 		   uint64_t branch_target_rip, uint8_t *raw_instr, size_t raw_instr_len)
 {
 	struct ibs_event_record rec;
-
+	int cpu;
 
 	if (!(opData3.ld_op == 1 || opData3.st_op == 1 || opData1.op_brn_ret))
 		return;
 
-	if (!ibs_chan)
+	cpu = ibs_this_cpu();
+	if (cpu < 0 || !ibs_chan[cpu])
 		return;
 
 	memset(&rec, 0, sizeof(rec));
@@ -226,5 +298,5 @@ void ibs_log_event(uint64_t rip_value, uint64_t uop_cnt,
 	rec.op_brn_misp   = !!opData1.op_brn_misp;
 	rec.op_brn_taken  = !!opData1.op_brn_taken;
 
-	ibs_relay_write(&rec, sizeof(rec));
+	ibs_relay_write_cpu(cpu, &rec, sizeof(rec));
 }

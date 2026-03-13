@@ -10,8 +10,8 @@
 
 #define IBS_RELAY_DIR       "ibs_logger"
 #define IBS_RELAY_BASENAME  "trace"
-#define IBS_SUBBUF_SIZE     (256 * 1024)
-#define IBS_N_SUBBUFS       8
+#define IBS_SUBBUF_SIZE (1024 * 1024)
+#define IBS_N_SUBBUFS   8
 
 
 /*
