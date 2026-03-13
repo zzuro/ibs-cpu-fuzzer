@@ -10,51 +10,61 @@ use crate::writer::ResultEntry;
 
 const PAGE_SIZE: u64 = 4096;
 
-fn read_hex_prefix(path: &Path) -> Result<Vec<u64>> {
+fn read_hex_prefix_and_skip_lines(path: &Path) -> Result<(Vec<u64>, usize)> {
     let file =
         File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
     let reader = BufReader::new(file);
 
-    let n = 512;
-    let mut values = Vec::with_capacity(n);
+    let mut values = Vec::new();
+    let mut skip_lines = 0;
 
-    for (idx, line) in reader.lines().take(n).enumerate() {
+    for (idx, line) in reader.lines().enumerate() {
         let line = line.with_context(|| {
             format!("failed to read line {} from {}", idx + 1, path.display())
         })?;
 
-        let s = match line.strip_prefix("HPA: ") {
-            Some(v) => v.trim(),
-            None => continue,
-        };
+        let trimmed = line.trim();
 
-        let s = s
-            .strip_prefix("0x")
-            .or_else(|| s.strip_prefix("0X"))
-            .unwrap_or(s);
+        // Skip empty lines before CSV if needed
+        if trimmed.is_empty() {
+            skip_lines += 1;
+            continue;
+        }
 
-        let value = u64::from_str_radix(s, 16).with_context(|| {
-            format!(
-                "failed to parse hex u64 on line {} in {}: {:?}",
-                idx + 1,
-                path.display(),
-                line
-            )
-        })?;
+        // Prefix section
+        if let Some(s) = trimmed.strip_prefix("HPA: ") {
+            let s = s.trim();
+            let s = s
+                .strip_prefix("0x")
+                .or_else(|| s.strip_prefix("0X"))
+                .unwrap_or(s);
 
-        values.push(value);
+            let value = u64::from_str_radix(s, 16).with_context(|| {
+                format!(
+                    "failed to parse hex u64 on line {} in {}: {:?}",
+                    idx + 1,
+                    path.display(),
+                    line
+                )
+            })?;
+
+            values.push(value);
+            skip_lines += 1;
+            continue;
+        }
+
+        // First non-HPA, non-empty line is assumed to be the CSV header
+        break;
     }
 
-    if values.len() != n {
+    if values.is_empty() {
         anyhow::bail!(
-            "expected {} prefix lines in {}, found only {}",
-            n,
-            path.display(),
-            values.len()
+            "no HPA prefix lines found before CSV in {}",
+            path.display()
         );
     }
 
-    Ok(values)
+    Ok((values, skip_lines))
 }
 
 fn hex_to_u64(name: &str) -> Expr {
@@ -153,10 +163,14 @@ fn repeated_pattern_expr(col_name: &str) -> Expr {
 }
 
 pub fn analyze_csv(path: &Path) -> Result<Option<Finding>> {
+
+    let (prefix_values, skip_lines) = read_hex_prefix_and_skip_lines(path)?;
+
+
     let path_str = path.to_string_lossy().to_string();
 
     let lf = LazyCsvReader::new(PlRefPath::new(&path_str))
-        .with_skip_lines(512)
+        .with_skip_lines(skip_lines)
         .with_has_header(true)
         .with_infer_schema_length(Some(30_000))
         .finish()
@@ -164,7 +178,7 @@ pub fn analyze_csv(path: &Path) -> Result<Option<Finding>> {
 
     let lf = convert_lf_hex_strings_to_u64(lf)?;
 
-    let mut guest_physical_addresses = read_hex_prefix(path)?;
+    let mut guest_physical_addresses = prefix_values;
     guest_physical_addresses.push(0);
     let target_pages: Vec<u64> = guest_physical_addresses
         .into_iter()

@@ -9,8 +9,27 @@ LOG_DIR = Path("/home/avezzu/ibs-cpu-fuzzer/logs/ibs_findings")
 def should_remove_entry(entry: dict) -> bool:
     """
     Apply the filtering criteria to a single res_entry item:
+
     """
-    pass
+    #RMP protected
+    LOW = 0xA0000000
+    HIGH = 0xA4000000
+    PAGE_SIZE = 0x1000
+    msr = [0x102354630, 0x1d69ac478, 0x39671e5f0, 0x110ab6470, 0xffc04dc1, 0x398641b20]
+
+    phys = int(entry["phys_addr"], 16)
+    lin = int(entry["lin_addr"], 16)
+    if lin != 0:
+        return True
+    in_fixed_range = LOW <= phys <= HIGH
+    if in_fixed_range:
+        return True
+    for msr_val in msr:
+        page_base = msr_val & ~(PAGE_SIZE - 1)
+        if page_base <= phys < page_base + PAGE_SIZE:
+            return True
+        
+    return False
 
 
 def process_json_file(path: Path) -> str:
@@ -60,7 +79,7 @@ def main() -> int:
         return
 
     for json_file in LOG_DIR.rglob("*.json"):
-        process_json_file(json_file)
+        print(process_json_file(json_file))
 
     return 0
 

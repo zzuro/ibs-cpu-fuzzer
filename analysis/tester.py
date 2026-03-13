@@ -323,7 +323,7 @@ def main() -> int:
     # Find the first subdirectory
     first_subdir = None
     for item in it:
-        if item.is_dir():
+        if item.is_dir() and len(list(item.glob("*.json"))) > 0:
             first_subdir = item
             break
     
@@ -333,15 +333,19 @@ def main() -> int:
         return 1
     
     # Get the first log file from the subdirectory
-    first_file = next(first_subdir.iterdir())
+    iter = first_subdir.iterdir()
+    for _ in range(1):
+        first_file = next(iter)
 
+
+    print(f"Using log file: {first_file}", file=sys.stderr)
     with first_file.open() as f:
         data = json.load(f) 
 
     instr = extract_bytes(data["source_file"])
     st = set_instruction(instr, len(instr))
     ioctl_set_state(dev_fd, st)
-    ioctl_set_register_value(dev_fd, 0x0000004000000000)
+    ioctl_set_register_value(dev_fd, 0x00005480000000)
     qemu_script = Path("./../vms/qemu.sh")
 
     try:

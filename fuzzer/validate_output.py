@@ -58,10 +58,10 @@ def error(path, msg):
 def check_csv(path):
     with open(path, newline="") as f:
 
-        for i in range(512):
+        for i in range(513):
             line = f.readline()
             if not line:
-                error(path, "file ended before 512 HPA lines")
+                error(path, "file ended before 513 HPA lines")
                 return
 
             line = line.rstrip("\n")
@@ -86,7 +86,7 @@ def check_csv(path):
 
         num_cols = len(header)
 
-        for line_no, row in enumerate(reader, start=514):
+        for line_no, row in enumerate(reader, start=515):
 
             if len(row) != num_cols:
                 error(path, f"line {line_no}: wrong column count (expected {num_cols}, got {len(row)})")

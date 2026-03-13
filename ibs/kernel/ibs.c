@@ -529,9 +529,30 @@ static int __init vmsave_module_init(void) {
                     return -1;
             } */
 
-    smp_call_function_single(CPU_NUMBER_IBS_USE, ibs_routine, NULL, 1);
-
+    //smp_call_function_single(CPU_NUMBER_IBS_USE, ibs_routine, NULL, 1);
+    // uint64_t hsave_pa = __read_msr(0xC0010117);
+    // pr_info("HSAVE_PA: %llx\n", hsave_pa);
     // cleanup_nmi();
+
+    phys_addr_t phys = 0xa0000000;
+    phys_addr_t start = phys & PAGE_MASK;
+    size_t off = phys & ~PAGE_MASK;
+    void *map;
+    u32 val;
+
+    size_t size = 0xa3000000 - 0xa0000000;
+
+    map = memremap(start, size, MEMREMAP_WB);
+    if (!map) {
+        pr_err("memremap failed for %pa\n", &start);
+        return -ENOMEM;
+    }
+
+    WRITE_ONCE(*(u32 *)((char *)map + off), 0xDEADBEEF);
+    val = READ_ONCE(*(u32 *)((char *)map + off));
+    pr_info("phys %pa -> val 0x%08x\n", &phys, val);
+
+    memunmap(map);
     return -1;
 }
 
