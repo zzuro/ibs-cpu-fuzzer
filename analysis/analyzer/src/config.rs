@@ -4,7 +4,8 @@ use std::path::PathBuf;
 pub struct Config {
     pub input_dir: PathBuf,
     pub findings_dir: PathBuf,
-    pub state_file: PathBuf,
+    pub state_dir: PathBuf,
+    pub fail_dir: PathBuf,
 }
 
 impl Config {
@@ -21,15 +22,21 @@ impl Config {
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("/mnt/truenas/ibs_findings"));
 
-        let state_file = args
+        let state_dir = args
             .next()
             .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("/mnt/truenas/state.json"));
+            .unwrap_or_else(|| PathBuf::from("/mnt/truenas/ibs_state"));
+
+        let fail_dir = args
+            .next()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/mnt/truenas/ibs_fail_logs"));
 
         Self {
             input_dir,
             findings_dir,
-            state_file,
+            state_dir,
+            fail_dir,
         }
     }
 }

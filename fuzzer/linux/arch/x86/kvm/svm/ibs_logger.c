@@ -10,6 +10,22 @@
 static struct rchan *ibs_chan;
 static struct dentry *ibs_dbg_dir;
 
+
+static __always_inline uint64_t __read_msr(uint32_t msr_register) {
+    uint64_t msr_value;
+    uint32_t low, high;
+
+    asm volatile(
+        "rdmsr"
+        : "=a"(low), "=d"(high)  // Output operands
+        : "c"(msr_register)      // Input operand
+    );
+
+    msr_value = ((uint64_t)high << 32) | low;
+    return msr_value;
+}
+
+
 static struct dentry *ibs_create_buf_file(const char *filename,
 					  struct dentry *parent,
 					  umode_t mode,
@@ -93,6 +109,20 @@ void ibs_log_hpa(uint64_t *hpa, size_t len, uint8_t *raw_instr, size_t raw_instr
 		rec.hdr.record_len = sizeof(rec);
 		ibs_relay_write(&rec, sizeof(rec));
 	}
+
+	struct ibs_hpa_record rec = {
+			.hdr = {
+				.record_type = IBS_REC_HPA,
+				.record_len = 0,
+				.instruction_len = raw_instr_len,
+				.instruction = {0},
+			},
+			.hpa         = __read_msr(0xC0010117), //HSAVE_PA
+	};
+
+	memcpy(rec.hdr.instruction, raw_instr, raw_instr_len);
+	rec.hdr.record_len = sizeof(rec);
+	ibs_relay_write(&rec, sizeof(rec));
 }
 
 void ibs_log_finish(void)
