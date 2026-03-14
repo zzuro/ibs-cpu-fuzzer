@@ -5,9 +5,9 @@ mod state;
 mod writer;
 
 use anyhow::{bail, Context, Result};
-use analyzer::analyze_csv;
+use analyzer::analyze_bin;
 use config::Config;
-use discovery::collect_csv_files;
+use discovery::collect_bin_files;
 use indicatif::{ProgressBar, ProgressStyle};
 use state::AnalyzerState;
 use std::fs::{self, OpenOptions};
@@ -31,9 +31,9 @@ fn main() -> Result<()> {
     fs::create_dir_all(&config.fail_dir)
         .with_context(|| format!("creating fail dir {}", config.fail_dir.display()))?;
 
-    let files = collect_csv_files(&config.input_dir);
+    let files = collect_bin_files(&config.input_dir);
 
-    println!("Discovered {} CSV files", files.len());
+    println!("Discovered {} BIN files", files.len());
     if files.is_empty() {
         println!("Done.");
         return Ok(());
@@ -87,7 +87,6 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-
 fn process_chunk(
     worker_idx: usize,
     core_id: core_affinity::CoreId,
@@ -134,7 +133,7 @@ fn process_chunk(
             continue;
         }
 
-        match analyze_csv(&file) {
+        match analyze_bin(&file) {
             Ok(Some(finding)) => {
                 write_finding(&findings_dir, &finding)
                     .with_context(|| format!("writing finding for {}", file.display()))?;
@@ -160,6 +159,10 @@ fn process_chunk(
             pb.inc(increment);
             increment = 0;
         }
+    }
+
+    if increment > 0 {
+        pb.inc(increment);
     }
 
     Ok(())

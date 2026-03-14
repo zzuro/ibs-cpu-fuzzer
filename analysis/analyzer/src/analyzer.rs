@@ -1,108 +1,253 @@
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use polars::lazy::dsl::{col, lit, when};
 use polars::prelude::*;
-use std::fs::File;
-use std::io::{BufRead, BufReader};
+use std::fs;
+use std::mem::size_of;
 use std::path::Path;
+use std::ptr;
 
-use crate::writer::Finding;
-use crate::writer::ResultEntry;
+use crate::writer::{Finding, ResultEntry};
 
 const PAGE_SIZE: u64 = 4096;
 
-fn read_hex_prefix_and_skip_lines(path: &Path) -> Result<(Vec<u64>, usize)> {
-    let file =
-        File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
-    let reader = BufReader::new(file);
+const IBS_REC_HPA: u32 = 1;
+const IBS_REC_EVENT: u32 = 2;
 
-    let mut values = Vec::new();
-    let mut skip_lines = 0;
+const IBS_OP_LOAD: u8 = 0;
+const IBS_OP_BRANCH: u8 = 2;
 
-    for (idx, line) in reader.lines().enumerate() {
-        let line = line.with_context(|| {
-            format!("failed to read line {} from {}", idx + 1, path.display())
-        })?;
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct IbsRecordHeader {
+    record_len: u32,
+    record_type: u32,
+    instruction_len: u8,
+    instruction: [u8; 15],
+}
 
-        let trimmed = line.trim();
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct IbsHpaRecord {
+    header: IbsRecordHeader,
+    hpa: u64,
+}
 
-        // Skip empty lines before CSV if needed
-        if trimmed.is_empty() {
-            skip_lines += 1;
-            continue;
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct IbsEventRecord {
+    header: IbsRecordHeader,
+
+    rip: u64,
+    uop_cnt: u64,
+    phys_addr: u64,
+    lin_addr: u64,
+    branch_target_rip: u64,
+
+    rax: u64,
+    rbx: u64,
+    rcx: u64,
+    rdx: u64,
+    rsi: u64,
+    rdi: u64,
+    r8: u64,
+    r9: u64,
+    r10: u64,
+    r11: u64,
+    r12: u64,
+    r13: u64,
+    r14: u64,
+    r15: u64,
+    rsp: u64,
+    rbp: u64,
+    rflags: u64,
+
+    op_type: u8,
+    mem_width: u8,
+    dc_uc_mem_acc: u8,
+    dc_wc_mem_acc: u8,
+    dc_miss: u8,
+    op_microcode: u8,
+    op_brn_fuse: u8,
+    op_brn_ret: u8,
+    op_brn_misp: u8,
+    op_brn_taken: u8,
+}
+
+unsafe fn read_unaligned_pod<T: Copy>(buf: &[u8]) -> T {
+    debug_assert!(buf.len() >= size_of::<T>());
+    unsafe { ptr::read_unaligned(buf.as_ptr() as *const T) }
+}
+
+struct ParsedTrace {
+    guest_hpas: Vec<u64>,
+    lf: LazyFrame,
+}
+
+fn parse_bin_to_lazyframe(path: &Path) -> Result<ParsedTrace> {
+    let data = fs::read(path)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+
+    let hdr_size = size_of::<IbsRecordHeader>();
+    let hpa_size = size_of::<IbsHpaRecord>();
+    let event_size = size_of::<IbsEventRecord>();
+
+    let mut off = 0usize;
+
+    let mut guest_hpas = Vec::<u64>::new();
+
+    let mut uop_cnt = Vec::<i64>::new();
+    let mut phys_addr = Vec::<u64>::new();
+    let mut lin_addr = Vec::<u64>::new();
+    let mut branch_target_rip = Vec::<u64>::new();
+
+    let mut rax = Vec::<u64>::new();
+    let mut rbx = Vec::<u64>::new();
+    let mut rcx = Vec::<u64>::new();
+    let mut rdx = Vec::<u64>::new();
+    let mut rsi = Vec::<u64>::new();
+    let mut rdi = Vec::<u64>::new();
+    let mut r8 = Vec::<u64>::new();
+    let mut r9 = Vec::<u64>::new();
+    let mut r10 = Vec::<u64>::new();
+    let mut r11 = Vec::<u64>::new();
+    let mut r12 = Vec::<u64>::new();
+    let mut r13 = Vec::<u64>::new();
+    let mut r14 = Vec::<u64>::new();
+    let mut r15 = Vec::<u64>::new();
+    let mut rsp = Vec::<u64>::new();
+    let mut rbp = Vec::<u64>::new();
+
+    let mut op_type = Vec::<u8>::new();
+    let mut dc_uc_mem_acc = Vec::<u8>::new();
+    let mut op_brn_misp = Vec::<u8>::new();
+
+    while off + hdr_size <= data.len() {
+        let hdr: IbsRecordHeader = unsafe { read_unaligned_pod(&data[off..off + hdr_size]) };
+
+        let rec_len = hdr.record_len as usize;
+        if rec_len < hdr_size {
+            bail!(
+                "malformed record in {} at offset {}: record_len={} < header_size={}",
+                path.display(),
+                off,
+                rec_len,
+                hdr_size
+            );
         }
 
-        // Prefix section
-        if let Some(s) = trimmed.strip_prefix("HPA: ") {
-            let s = s.trim();
-            let s = s
-                .strip_prefix("0x")
-                .or_else(|| s.strip_prefix("0X"))
-                .unwrap_or(s);
+        if off + rec_len > data.len() {
+            bail!(
+                "truncated record in {} at offset {}: record_len={} exceeds file size",
+                path.display(),
+                off,
+                rec_len
+            );
+        }
 
-            let value = u64::from_str_radix(s, 16).with_context(|| {
-                format!(
-                    "failed to parse hex u64 on line {} in {}: {:?}",
-                    idx + 1,
+        let rec_bytes = &data[off..off + rec_len];
+
+        match hdr.record_type {
+            IBS_REC_HPA => {
+                if rec_len != hpa_size {
+                    bail!(
+                        "bad HPA record size in {} at offset {}: got {}, expected {}",
+                        path.display(),
+                        off,
+                        rec_len,
+                        hpa_size
+                    );
+                }
+
+                let rec: IbsHpaRecord = unsafe { read_unaligned_pod(rec_bytes) };
+                guest_hpas.push(rec.hpa);
+            }
+
+            IBS_REC_EVENT => {
+                if rec_len != event_size {
+                    bail!(
+                        "bad EVENT record size in {} at offset {}: got {}, expected {}",
+                        path.display(),
+                        off,
+                        rec_len,
+                        event_size
+                    );
+                }
+
+                let rec: IbsEventRecord = unsafe { read_unaligned_pod(rec_bytes) };
+
+                uop_cnt.push(rec.uop_cnt as i64);
+                phys_addr.push(rec.phys_addr);
+                lin_addr.push(rec.lin_addr);
+                branch_target_rip.push(rec.branch_target_rip);
+
+                rax.push(rec.rax);
+                rbx.push(rec.rbx);
+                rcx.push(rec.rcx);
+                rdx.push(rec.rdx);
+                rsi.push(rec.rsi);
+                rdi.push(rec.rdi);
+                r8.push(rec.r8);
+                r9.push(rec.r9);
+                r10.push(rec.r10);
+                r11.push(rec.r11);
+                r12.push(rec.r12);
+                r13.push(rec.r13);
+                r14.push(rec.r14);
+                r15.push(rec.r15);
+                rsp.push(rec.rsp);
+                rbp.push(rec.rbp);
+
+                op_type.push(rec.op_type);
+                dc_uc_mem_acc.push(rec.dc_uc_mem_acc);
+                op_brn_misp.push(rec.op_brn_misp);
+            }
+
+            other => {
+                bail!(
+                    "unknown record type {} in {} at offset {}",
+                    other,
                     path.display(),
-                    line
-                )
-            })?;
-
-            values.push(value);
-            skip_lines += 1;
-            continue;
+                    off
+                );
+            }
         }
 
-        // First non-HPA, non-empty line is assumed to be the CSV header
-        break;
+        off += rec_len;
     }
 
-    if values.is_empty() {
-        anyhow::bail!(
-            "no HPA prefix lines found before CSV in {}",
-            path.display()
-        );
-    }
 
-    Ok((values, skip_lines))
-}
+    let df = DataFrame::new_infer_height(vec![
+        Series::new("uop_cnt".into(), uop_cnt).into(),
+        Series::new("phys_addr".into(), phys_addr).into(),
+        Series::new("lin_addr".into(), lin_addr).into(),
+        Series::new("branch_target_rip".into(), branch_target_rip).into(),
 
-fn hex_to_u64(name: &str) -> Expr {
-    col(name)
-        .str()
-        .strip_prefix(lit("0x"))
-        .str()
-        .to_integer(lit(16u32), Some(DataType::UInt64), true)
-        .alias(name)
-}
+        Series::new("rax".into(), rax).into(),
+        Series::new("rbx".into(), rbx).into(),
+        Series::new("rcx".into(), rcx).into(),
+        Series::new("rdx".into(), rdx).into(),
+        Series::new("rsi".into(), rsi).into(),
+        Series::new("rdi".into(), rdi).into(),
+        Series::new("r8".into(), r8).into(),
+        Series::new("r9".into(), r9).into(),
+        Series::new("r10".into(), r10).into(),
+        Series::new("r11".into(), r11).into(),
+        Series::new("r12".into(), r12).into(),
+        Series::new("r13".into(), r13).into(),
+        Series::new("r14".into(), r14).into(),
+        Series::new("r15".into(), r15).into(),
+        Series::new("rsp".into(), rsp).into(),
+        Series::new("rbp".into(), rbp).into(),
 
-fn convert_lf_hex_strings_to_u64(lf: LazyFrame) -> Result<LazyFrame> {
-    let hex_cols = [
-        "rip",
-        "phys_addr",
-        "lin_addr",
-        "branch_target_rip",
-        "rax",
-        "rbx",
-        "rcx",
-        "rdx",
-        "rsi",
-        "rdi",
-        "r8",
-        "r9",
-        "r10",
-        "r11",
-        "r12",
-        "r13",
-        "r14",
-        "r15",
-        "rsp",
-        "rbp",
-        "rflags",
-    ];
+        UInt8Chunked::from_vec("op_type".into(), op_type).into_series().into(),
+        UInt8Chunked::from_vec("dc_uc_mem_acc".into(), dc_uc_mem_acc).into_series().into(),
+        UInt8Chunked::from_vec("op_brn_misp".into(), op_brn_misp).into_series().into(),
+    ])?;
 
-    let exprs: Vec<Expr> = hex_cols.iter().map(|name| hex_to_u64(name)).collect();
-    Ok(lf.with_columns(exprs))
+    Ok(ParsedTrace {
+        guest_hpas,
+        lf: df.lazy(),
+    })
 }
 
 fn abs_diff_le(a: Expr, b: Expr, threshold: u64) -> Expr {
@@ -120,24 +265,20 @@ fn similar_to_any_reg_expr(value_col: &str, regs: &[&str], threshold: u64) -> Ex
 }
 
 fn has_repeated_pattern_u64(v: u64) -> bool {
-
     if v == 0 {
         return false;
     }
 
     let b = v.to_le_bytes();
 
-    // all bytes equal
     if b.iter().all(|x| *x == b[0]) {
         return true;
     }
 
-    // 2-byte pattern repeated 4 times
     if b[0..2] == b[2..4] && b[0..2] == b[4..6] && b[0..2] == b[6..8] {
         return true;
     }
 
-    // 4-byte pattern repeated 2 times
     if b[0..4] == b[4..8] {
         return true;
     }
@@ -162,25 +303,17 @@ fn repeated_pattern_expr(col_name: &str) -> Expr {
     )
 }
 
-pub fn analyze_csv(path: &Path) -> Result<Option<Finding>> {
-
-    let (prefix_values, skip_lines) = read_hex_prefix_and_skip_lines(path)?;
-
-
+pub fn analyze_bin(path: &Path) -> Result<Option<Finding>> {
     let path_str = path.to_string_lossy().to_string();
 
-    let lf = LazyCsvReader::new(PlRefPath::new(&path_str))
-        .with_skip_lines(skip_lines)
-        .with_has_header(true)
-        .with_infer_schema_length(Some(30_000))
-        .finish()
-        .with_context(|| format!("failed to create lazy reader for {}", path.display()))?;
+    let ParsedTrace {
+        mut guest_hpas,
+        lf,
+    } = parse_bin_to_lazyframe(path)?;
 
-    let lf = convert_lf_hex_strings_to_u64(lf)?;
+    guest_hpas.push(0);
 
-    let mut guest_physical_addresses = prefix_values;
-    guest_physical_addresses.push(0);
-    let target_pages: Vec<u64> = guest_physical_addresses
+    let target_pages: Vec<u64> = guest_hpas
         .into_iter()
         .map(|addr| addr / PAGE_SIZE)
         .collect();
@@ -210,20 +343,16 @@ pub fn analyze_csv(path: &Path) -> Result<Option<Finding>> {
             .alias("flag_branch_target_similar_reg"),
         repeated_pattern_expr("phys_addr").alias("flag_phys_pattern"),
         repeated_pattern_expr("branch_target_rip").alias("flag_branch_pattern"),
-        col("dc_uc_mem_acc").eq(lit(1)).alias("flag_dc_uc_mem_acc"),
+        col("dc_uc_mem_acc").eq(lit(1u8)).alias("flag_dc_uc_mem_acc"),
     ]);
-    
 
-    let threshold = 5 * 1024; //5 runs where offset is increased by 1024
+    let threshold = 5 * 1024u64;
     let reg_change_expr = regs
-    .iter()
-    .map(|r| {
-        (col(*r).max() - col(*r).min())
-            .gt(lit(threshold))
-    })
-    .reduce(|a, b| a.or(b))
-    .unwrap()
-    .alias("flag_any_reg_changes");
+        .iter()
+        .map(|r| (col(*r).max() - col(*r).min()).gt(lit(threshold)))
+        .reduce(|a, b| a.or(b))
+        .unwrap()
+        .alias("flag_any_reg_changes");
 
     let lin_phys_conflicts = lf
         .clone()
@@ -234,10 +363,9 @@ pub fn analyze_csv(path: &Path) -> Result<Option<Finding>> {
         ])
         .with_columns([
             col("group_n_unique").gt(lit(3)).and(
-            (col("phys_addr") - col("group_phys_min")).gt_eq(lit(1024u64))
-            .or(
-                (col("group_phys_max") - col("phys_addr")).gt_eq(lit(1024u64))
-            ))
+                (col("phys_addr") - col("group_phys_min")).gt_eq(lit(1024u64))
+                    .or((col("group_phys_max") - col("phys_addr")).gt_eq(lit(1024u64)))
+            )
             .alias("lin_phys_conflict_row"),
         ])
         .group_by([col("uop_cnt")])
@@ -262,13 +390,13 @@ pub fn analyze_csv(path: &Path) -> Result<Option<Finding>> {
         ])
         .with_columns([
             col("op_type")
-                .eq(lit("load"))
-                .and(col("next_op_type").eq(lit("branch")))
+                .eq(lit(IBS_OP_LOAD))
+                .and(col("next_op_type").eq(lit(IBS_OP_BRANCH)))
                 .alias("flag_load_followed_by_branch_row"),
             col("op_type")
-                .eq(lit("load"))
-                .and(col("next_op_type").eq(lit("branch")))
-                .and(col("next_op_brn_misp").eq(lit(1)))
+                .eq(lit(IBS_OP_LOAD))
+                .and(col("next_op_type").eq(lit(IBS_OP_BRANCH)))
+                .and(col("next_op_brn_misp").eq(lit(1u8)))
                 .alias("flag_load_followed_by_mispred_branch_row"),
         ]);
 
@@ -337,53 +465,52 @@ pub fn analyze_csv(path: &Path) -> Result<Option<Finding>> {
         ]);
 
     let debug_flags = sample_flags
-    .clone()
-    .filter(col("interesting_sample"))
-    .select([
-        col("uop_cnt"),
-        col("flag_phys_similar_reg"),
-        col("flag_branch_target_similar_reg"),
-        col("flag_phys_pattern"),
-        col("flag_branch_pattern"),
-        col("flag_dc_uc_mem_acc"),
-        col("flag_branch_target_changes"),
-        col("flag_phys_msb_changes"),
-        col("flag_any_reg_changes"),
-        col("flag_same_lin_diff_phys"),
-        col("flag_load_followed_by_branch"),
-        col("flag_load_followed_by_mispred_branch"),
-    ]);
+        .clone()
+        .filter(col("interesting_sample"))
+        .select([
+            col("uop_cnt"),
+            col("flag_phys_similar_reg"),
+            col("flag_branch_target_similar_reg"),
+            col("flag_phys_pattern"),
+            col("flag_branch_pattern"),
+            col("flag_dc_uc_mem_acc"),
+            col("flag_branch_target_changes"),
+            col("flag_phys_msb_changes"),
+            col("flag_any_reg_changes"),
+            col("flag_same_lin_diff_phys"),
+            col("flag_load_followed_by_branch"),
+            col("flag_load_followed_by_mispred_branch"),
+        ]);
 
     let interesting_rows = lf
-    .join(
-        debug_flags,
-        [col("uop_cnt")],
-        [col("uop_cnt")],
-        JoinArgs::new(JoinType::Inner),
-    )
-    .select([
-        col("uop_cnt"),
-        col("phys_addr"),
-        col("lin_addr"),
-        col("branch_target_rip"),
-
-        col("flag_phys_similar_reg"),
-        col("flag_branch_target_similar_reg"),
-        col("flag_phys_pattern"),
-        col("flag_branch_pattern"),
-        col("flag_dc_uc_mem_acc"),
-        col("flag_branch_target_changes"),
-        col("flag_phys_msb_changes"),
-        col("flag_any_reg_changes"),
-        col("flag_same_lin_diff_phys"),
-        col("flag_load_followed_by_branch"),
-        col("flag_load_followed_by_mispred_branch"),
-    ])
-    .collect()
-    .with_context(|| format!("failed to collect interesting rows for {}", path.display()))?;
+        .join(
+            debug_flags,
+            [col("uop_cnt")],
+            [col("uop_cnt")],
+            JoinArgs::new(JoinType::Inner),
+        )
+        .select([
+            col("uop_cnt"),
+            col("phys_addr"),
+            col("lin_addr"),
+            col("branch_target_rip"),
+            col("flag_phys_similar_reg"),
+            col("flag_branch_target_similar_reg"),
+            col("flag_phys_pattern"),
+            col("flag_branch_pattern"),
+            col("flag_dc_uc_mem_acc"),
+            col("flag_branch_target_changes"),
+            col("flag_phys_msb_changes"),
+            col("flag_any_reg_changes"),
+            col("flag_same_lin_diff_phys"),
+            col("flag_load_followed_by_branch"),
+            col("flag_load_followed_by_mispred_branch"),
+        ])
+        .collect()
+        .with_context(|| format!("failed to collect interesting rows for {}", path.display()))?;
 
     if interesting_rows.height() == 0 {
-    return Ok(None);
+        return Ok(None);
     }
 
     let mut finding = Finding {
@@ -411,7 +538,7 @@ pub fn analyze_csv(path: &Path) -> Result<Option<Finding>> {
 
     for i in 0..interesting_rows.height() {
         let mut reasons = Vec::new();
-    
+
         if flag_phys_similar_reg.get(i).unwrap_or(false) {
             reasons.push("phys_addr similar to register".to_string());
         }
@@ -445,7 +572,7 @@ pub fn analyze_csv(path: &Path) -> Result<Option<Finding>> {
         if flag_load_followed_by_mispred_branch.get(i).unwrap_or(false) {
             reasons.push("load followed by mispredicted branch".to_string());
         }
-    
+
         finding.res_entry.push(ResultEntry {
             uop_cnt: uop.get(i).unwrap_or(0),
             phys_addr: phys.get(i).unwrap_or(0),
@@ -456,5 +583,4 @@ pub fn analyze_csv(path: &Path) -> Result<Option<Finding>> {
     }
 
     Ok(Some(finding))
-
 }
