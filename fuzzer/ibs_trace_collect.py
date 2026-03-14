@@ -15,19 +15,20 @@ import ctypes
 import shlex
 import errno
 import threading
-
+import traceback
 
 
 SSD_DIR = Path("/mnt/truenas/")
 LOG_DIR = Path("/mnt/truenas/ibs_log")
 IBS_PREFIX = str(LOG_DIR / "ibs_")
-IBS_SUFFIX = ".csv"
+IBS_SUFFIX = ".bin"
 
 DEVICE_NAME = "/dev/svm_ibs_dev"
 MAX_INSN_LENGTH = 15
 
 TRACE_BASE = "/sys/kernel/debug/ibs_logger/cpu"
 POLL_SLEEP_SEC = 0.05
+BIN_BUFFER_SIZE = 1024 * 1024
 
 FUZZ_IOC_GET_STATE = _IOR(ord('a'), ord('c'), FuzzerState)
 FUZZ_IOC_SET_STATE = _IOW(ord('a'), ord('d'), FuzzerState)
@@ -37,6 +38,20 @@ FUZZ_IOC_MOVE_NEXT_INSTR = _IO(ord('a'), ord('g'))
 FUZZ_IOC_RESET_STATE = _IO(ord('a'), ord('i'))
 
 stop_event = threading.Event()
+print_lock = threading.Lock()
+
+
+# ----------------------------
+# Thread-safe printing
+# ----------------------------
+
+def ts_print(*args, **kwargs):
+    with print_lock:
+        print(*args, **kwargs)
+
+def ts_print_exc():
+    with print_lock:
+        traceback.print_exc(file=sys.stderr)
 
 
 # ----------------------------
@@ -53,13 +68,13 @@ def reset_log_directory():
 
 def count_log_files() -> int:
     if not LOG_DIR.exists():
-        print("Log directory does not exist", file=sys.stderr)
+        ts_print("Log directory does not exist", file=sys.stderr)
         return 0
 
     files = [f for f in LOG_DIR.iterdir() if f.is_file()]
     total = len(files)
     avg_size = sum(f.stat().st_size for f in files) / total if total > 0 else 0
-    print(f"Log directory contains {total} files, average size: {avg_size:.2f} bytes", file=sys.stderr)
+    ts_print(f"Log directory contains {total} files, average size: {avg_size:.2f} bytes", file=sys.stderr)
     return total
 
 def create_log_directory_if_missing():
@@ -73,15 +88,6 @@ def check_disk_space():
 def generate_filename(insn_bytes: bytes) -> str:
     encoded = "".join(f"\\x{b:02x}" for b in insn_bytes)
     return f"{IBS_PREFIX}{encoded}{IBS_SUFFIX}"
-
-def op_type_to_str(op_type: int) -> str:
-    if op_type == IBS_OP_LOAD:
-        return "load"
-    if op_type == IBS_OP_STORE:
-        return "store"
-    if op_type == IBS_OP_BRANCH:
-        return "branch"
-    return "unknown"
 
 def read_exact_or_none(f, n: int) -> bytes | None:
     chunks = []
@@ -114,59 +120,6 @@ def read_exact_or_none(f, n: int) -> bytes | None:
 class WorkerContext:
     def __init__(self, core_id: int):
         self.core_id = core_id
-        self.last_was_hpa = False
-
-def handle_hpa_record(ctx: WorkerContext, rec: IbsHpaRecord, out) -> None:
-    out.write(f"HPA: 0x{rec.hpa:016x}\n")
-    ctx.last_was_hpa = True
-
-def handle_event_record(ctx: WorkerContext, rec: IbsEventRecord, out) -> None:
-    if ctx.last_was_hpa:
-        out.write(",".join([
-            "rip","uop_cnt","phys_addr","lin_addr","branch_target_rip",
-            "rax","rbx","rcx","rdx","rsi","rdi","r8","r9","r10","r11",
-            "r12","r13","r14","r15","rsp","rbp","rflags","op_type",
-            "mem_width","dc_uc_mem_acc","dc_wc_mem_acc","dc_miss",
-            "op_microcode","op_brn_fuse","op_brn_ret","op_brn_misp",
-            "op_brn_taken",
-        ]) + "\n")
-
-    out.write(",".join([
-        f"0x{rec.rip:x}",
-        str(rec.uop_cnt),
-        f"0x{rec.phys_addr:x}",
-        f"0x{rec.lin_addr:x}",
-        f"0x{rec.branch_target_rip:x}",
-        f"0x{rec.rax:x}",
-        f"0x{rec.rbx:x}",
-        f"0x{rec.rcx:x}",
-        f"0x{rec.rdx:x}",
-        f"0x{rec.rsi:x}",
-        f"0x{rec.rdi:x}",
-        f"0x{rec.r8:x}",
-        f"0x{rec.r9:x}",
-        f"0x{rec.r10:x}",
-        f"0x{rec.r11:x}",
-        f"0x{rec.r12:x}",
-        f"0x{rec.r13:x}",
-        f"0x{rec.r14:x}",
-        f"0x{rec.r15:x}",
-        f"0x{rec.rsp:x}",
-        f"0x{rec.rbp:x}",
-        f"0x{rec.rflags:x}",
-        op_type_to_str(rec.op_type),
-        memwithStrings[rec.mem_width],
-        str(rec.dc_uc_mem_acc),
-        str(rec.dc_wc_mem_acc),
-        str(rec.dc_miss),
-        str(rec.op_microcode),
-        str(rec.op_brn_fuse),
-        str(rec.op_brn_ret),
-        str(rec.op_brn_misp),
-        str(rec.op_brn_taken),
-    ]) + "\n")
-
-    ctx.last_was_hpa = False
 
 
 # ----------------------------
@@ -260,47 +213,47 @@ def dump_fuzzer_state_pretty(st: FuzzerState) -> None:
         b = bytes(insn.bytes[:insn.len])
         return f"len={insn.len} bytes=" + " ".join(f"\\{x:02x}" for x in b)
 
-    print("========== FUZZER STATE ==========")
-    print("Pointers:")
-    print(f"  fuzz_mem1_host : 0x{st.fuzz_mem1_host or 0:016x}")
-    print(f"  fuzz_mem1_guest: 0x{st.fuzz_mem1_guest or 0:016x}")
-    print(f"  fuzz_mem2_host : 0x{st.fuzz_mem2_host or 0:016x}")
-    print(f"  fuzz_mem2_guest: 0x{st.fuzz_mem2_guest or 0:016x}")
-    print()
+    ts_print("========== FUZZER STATE ==========")
+    ts_print("Pointers:")
+    ts_print(f"  fuzz_mem1_host : 0x{st.fuzz_mem1_host or 0:016x}")
+    ts_print(f"  fuzz_mem1_guest: 0x{st.fuzz_mem1_guest or 0:016x}")
+    ts_print(f"  fuzz_mem2_host : 0x{st.fuzz_mem2_host or 0:016x}")
+    ts_print(f"  fuzz_mem2_guest: 0x{st.fuzz_mem2_guest or 0:016x}")
+    ts_print()
 
-    print("Total Range:")
-    print(f"  started : {bool(st.total_range.started)}")
-    print()
+    ts_print("Total Range:")
+    ts_print(f"  started : {bool(st.total_range.started)}")
+    ts_print()
 
-    print("Injection:")
-    print(f"  insn     : {insn_to_str(st.inj.i)}")
-    print(f"  index    : {st.inj.index}")
-    print(f"  last_len : {st.inj.last_len}")
-    print()
+    ts_print("Injection:")
+    ts_print(f"  insn     : {insn_to_str(st.inj.i)}")
+    ts_print(f"  index    : {st.inj.index}")
+    ts_print(f"  last_len : {st.inj.last_len}")
+    ts_print()
 
-    print("Result:")
-    print(f"  valid     : {st.result.valid}")
-    print(f"  length    : {st.result.length}")
-    print(f"  ecxeption : {st.result.ecxeption}")
-    print()
+    ts_print("Result:")
+    ts_print(f"  valid     : {st.result.valid}")
+    ts_print(f"  length    : {st.result.length}")
+    ts_print(f"  ecxeption : {st.result.ecxeption}")
+    ts_print()
 
-    print("Execution:")
+    ts_print("Execution:")
     op_map = {0: "START", 1: "INSTRUCTION", 2: "MICROOP"}
-    print(f"  current_op    : {op_map.get(st.current_op)}")
-    print(f"  fetch_counter : {st.fetch_counter}")
-    print(f"  file_open     : {bool(st.file_open)}")
-    print()
+    ts_print(f"  current_op    : {op_map.get(st.current_op)}")
+    ts_print(f"  fetch_counter : {st.fetch_counter}")
+    ts_print(f"  file_open     : {bool(st.file_open)}")
+    ts_print()
 
-    print("Saved CPU State (VMCB excerpt):")
-    print(f"  RIP     : 0x{st.saved_state.rip:016x}")
-    print(f"  RSP     : 0x{st.saved_state.rsp:016x}")
-    print(f"  RAX     : 0x{st.saved_state.rax:016x}")
-    print(f"  RFLAGS  : 0x{st.saved_state.rflags:016x}")
-    print(f"  CR0     : 0x{st.saved_state.cr0:016x}")
-    print(f"  CR3     : 0x{st.saved_state.cr3:016x}")
-    print(f"  CR4     : 0x{st.saved_state.cr4:016x}")
-    print(f"  EFER    : 0x{st.saved_state.efer:016x}")
-    print("==================================")
+    ts_print("Saved CPU State (VMCB excerpt):")
+    ts_print(f"  RIP     : 0x{st.saved_state.rip:016x}")
+    ts_print(f"  RSP     : 0x{st.saved_state.rsp:016x}")
+    ts_print(f"  RAX     : 0x{st.saved_state.rax:016x}")
+    ts_print(f"  RFLAGS  : 0x{st.saved_state.rflags:016x}")
+    ts_print(f"  CR0     : 0x{st.saved_state.cr0:016x}")
+    ts_print(f"  CR3     : 0x{st.saved_state.cr3:016x}")
+    ts_print(f"  CR4     : 0x{st.saved_state.cr4:016x}")
+    ts_print(f"  EFER    : 0x{st.saved_state.efer:016x}")
+    ts_print("==================================")
 
 
 # ----------------------------
@@ -325,8 +278,8 @@ def start_qemu(cmd: list[str], core_id: int) -> subprocess.Popen:
     return subprocess.Popen(
         cmd,
         stdin=subprocess.DEVNULL,
-        stdout=sys.stdout,
-        stderr=sys.stderr,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
         start_new_session=True,
     )
 
@@ -380,11 +333,11 @@ def trace_loop_with_timeout(
     try:
         relay_fd = open(trace_path, "rb", buffering=0)
     except Exception as e:
-        print(f"[core {core_id}] Failed to open {trace_path}: {e}", file=sys.stderr)
+        ts_print(f"[core {core_id}] Failed to open {trace_path}: {e}", file=sys.stderr)
         return 1
 
     last_received = time.monotonic()
-    print(f"[core {core_id}] Starting trace loop on {trace_path} (timeout={inactivity_timeout}s)", file=sys.stderr)
+    ts_print(f"[core {core_id}] Starting trace loop on {trace_path} (timeout={inactivity_timeout}s)", file=sys.stderr)
 
     current_insn_bytes = None
     out = None
@@ -397,12 +350,12 @@ def trace_loop_with_timeout(
                 try:
                     st = ioctl_get_state(device_fd)
                     dump_state_to_file(st, on_timeout_state_path)
-                    print(f"[core {core_id}] Saved fuzz_state to {on_timeout_state_path}", file=sys.stderr)
+                    ts_print(f"[core {core_id}] Saved fuzz_state to {on_timeout_state_path}", file=sys.stderr)
                 except Exception as e:
                     st = None
-                    print(f"[core {core_id}] ERROR: failed to GET/DUMP state on timeout: {e}", file=sys.stderr)
+                    ts_print(f"[core {core_id}] ERROR: failed to GET/DUMP state on timeout: {e}", file=sys.stderr)
 
-                print(f"[core {core_id}] TIMEOUT: no activity for {inactivity_timeout}s", file=sys.stderr)
+                ts_print(f"[core {core_id}] TIMEOUT: no activity for {inactivity_timeout}s", file=sys.stderr)
 
                 try:
                     if st is not None:
@@ -410,24 +363,24 @@ def trace_loop_with_timeout(
                     else:
                         log_timeout_instruction(crash_log, b"", note="timeout (state unavailable)")
                 except Exception as e:
-                    print(f"[core {core_id}] WARN: failed to log timeout instruction: {e}", file=sys.stderr)
+                    ts_print(f"[core {core_id}] WARN: failed to log timeout instruction: {e}", file=sys.stderr)
 
                 if qemu_proc is not None:
-                    print(f"[core {core_id}] Stopping QEMU ...", file=sys.stderr)
+                    ts_print(f"[core {core_id}] Stopping QEMU ...", file=sys.stderr)
                     kill_qemu(qemu_proc)
 
                 try:
                     ioctl_move_next_instr(device_fd)
                 except Exception as e:
-                    print(f"[core {core_id}] ERROR: failed to rotate instruction/log after timeout: {e}", file=sys.stderr)
+                    ts_print(f"[core {core_id}] ERROR: failed to rotate instruction/log after timeout: {e}", file=sys.stderr)
                     relay_fd.close()
                     return 2
 
                 try:
                     qemu_proc = start_qemu(parse_qemu_script(qemu_script), core_id)
-                    print(f"[core {core_id}] Restarted QEMU (pid={qemu_proc.pid})", file=sys.stderr)
+                    ts_print(f"[core {core_id}] Restarted QEMU (pid={qemu_proc.pid})", file=sys.stderr)
                 except Exception as e:
-                    print(f"[core {core_id}] ERROR: failed to restart QEMU: {e}", file=sys.stderr)
+                    ts_print(f"[core {core_id}] ERROR: failed to restart QEMU: {e}", file=sys.stderr)
                     relay_fd.close()
                     return 2
 
@@ -451,19 +404,19 @@ def trace_loop_with_timeout(
                     dump_state_to_file(st, on_timeout_state_path)
                 except Exception:
                     pass
-                print(f"[core {core_id}] WARN: malformed record with len={hdr.record_len}, skipping", file=sys.stderr)
+                ts_print(f"[core {core_id}] WARN: malformed record with len={hdr.record_len}, skipping", file=sys.stderr)
                 continue
 
             if hdr.record_type == IBS_REC_FINISH or not check_disk_space():
                 if not check_disk_space():
-                    print(f"[core {core_id}] ERROR: disk space low, stopping.", file=sys.stderr)
+                    ts_print(f"[core {core_id}] ERROR: disk space low, stopping.", file=sys.stderr)
                 else:
-                    print(f"[core {core_id}] Received FINISH record, stopping.", file=sys.stderr)
+                    ts_print(f"[core {core_id}] Received FINISH record, stopping.", file=sys.stderr)
 
                 if out is not None:
                     out.close()
                 if qemu_proc is not None:
-                    print(f"[core {core_id}] Stopping QEMU ...", file=sys.stderr)
+                    ts_print(f"[core {core_id}] Stopping QEMU ...", file=sys.stderr)
                     kill_qemu(qemu_proc)
                 relay_fd.close()
                 return 0
@@ -474,7 +427,7 @@ def trace_loop_with_timeout(
                 current_path = generate_filename(current_insn_bytes)
                 if out is not None:
                     out.close()
-                out = open(current_path, "w", buffering=1)
+                out = open(current_path, "ab", buffering=BIN_BUFFER_SIZE)
 
             remaining = hdr.record_len - HEADER_SIZE
             body_blob = read_exact_or_none(relay_fd, remaining)
@@ -487,22 +440,20 @@ def trace_loop_with_timeout(
 
             if hdr.record_type == IBS_REC_HPA:
                 if hdr.record_len != HPA_SIZE:
-                    print(f"[core {core_id}] WARN: malformed HPA record with len={hdr.record_len}, skipping", file=sys.stderr)
+                    ts_print(f"[core {core_id}] WARN: malformed HPA record with len={hdr.record_len}, skipping", file=sys.stderr)
                     continue
-                rec = IbsHpaRecord.from_buffer_copy(full_blob)
-                handle_hpa_record(ctx, rec, out)
 
             elif hdr.record_type == IBS_REC_EVENT:
                 if hdr.record_len != EVENT_SIZE:
                     raise ValueError(
                         f"[core {core_id}] EVENT record size mismatch: got {hdr.record_len}, expected {EVENT_SIZE}"
                     )
-                rec = IbsEventRecord.from_buffer_copy(full_blob)
-                handle_event_record(ctx, rec, out)
 
             else:
-                print(f"[core {core_id}] WARN: unknown record type {hdr.record_type}, skipping", file=sys.stderr)
+                ts_print(f"[core {core_id}] WARN: unknown record type {hdr.record_type}, skipping", file=sys.stderr)
                 continue
+
+            out.write(full_blob)
 
     except KeyboardInterrupt:
         stop_event.set()
@@ -526,8 +477,8 @@ def trace_loop_with_timeout(
 # Worker
 # ----------------------------
 
-def core_worker(core_id: int, device_fd : int,args) -> None:
-    dev_fd = device_fd
+def core_worker(core_id: int, args) -> None:
+    dev_fd = open_device()
     qemu_proc = None
 
     os.sched_setaffinity(0, {core_id})
@@ -535,20 +486,18 @@ def core_worker(core_id: int, device_fd : int,args) -> None:
     qemu_script = Path(args.qemu_script)
 
     try:
-
         if args.resume:
             st = load_state_from_file(state_path)
             ioctl_set_state(dev_fd, st)
             create_log_directory_if_missing()
-            print(f"[core {core_id}] Resumed fuzz_state from {state_path}", file=sys.stderr)
+            ts_print(f"[core {core_id}] Resumed fuzz_state from {state_path}", file=sys.stderr)
         else:
             st = default_reset_state()
             ioctl_set_state(dev_fd, st)
-            ioctl_reset_state(dev_fd)
-            print(f"[core {core_id}] Fuzzer state reset successfully.", file=sys.stderr)
+            ts_print(f"[core {core_id}] Fuzzer state reset successfully.", file=sys.stderr)
 
         qemu_proc = start_qemu(parse_qemu_script(qemu_script), core_id)
-        print(f"[core {core_id}] Started QEMU via {qemu_script} (pid={qemu_proc.pid})", file=sys.stderr)
+        ts_print(f"[core {core_id}] Started QEMU via {qemu_script} (pid={qemu_proc.pid})", file=sys.stderr)
 
         trace_loop_with_timeout(
             core_id=core_id,
@@ -561,7 +510,8 @@ def core_worker(core_id: int, device_fd : int,args) -> None:
         )
 
     except Exception as e:
-        print(f"[core {core_id}] Worker failed: {e}", file=sys.stderr)
+        ts_print(f"[core {core_id}] Worker failed: {e}", file=sys.stderr)
+        ts_print_exc()
         stop_event.set()
 
     finally:
@@ -589,7 +539,7 @@ def get_available_cores() -> list[int]:
         return list(range(n))
 
 def signal_handler(sig, frame):
-    print("\nReceived Ctrl+C, stopping all workers...", file=sys.stderr)
+    ts_print("\nReceived Ctrl+C, stopping all workers...", file=sys.stderr)
     stop_event.set()
 
 def main() -> int:
@@ -622,7 +572,7 @@ def main() -> int:
     else:
         cores = get_available_cores()
 
-    print(f"Using cores: {cores}", file=sys.stderr)
+    ts_print(f"Using cores: {cores}", file=sys.stderr)
 
     if args.save_state:
         base_path = Path(args.save_state)
@@ -636,11 +586,11 @@ def main() -> int:
 
                 core_state_path = Path(str(base_path).replace(".bin", f".core{core_id}.bin"))
                 save_state(dev_fd, core_state_path)
-                print(f"[core {core_id}] Saved fuzz_state to {core_state_path}", file=sys.stderr)
+                ts_print(f"[core {core_id}] Saved fuzz_state to {core_state_path}", file=sys.stderr)
 
             except Exception as e:
                 had_error = True
-                print(f"[core {core_id}] Failed to save state: {e}", file=sys.stderr)
+                ts_print(f"[core {core_id}] Failed to save state: {e}", file=sys.stderr)
 
             finally:
                 if dev_fd is not None:
@@ -659,13 +609,15 @@ def main() -> int:
             check=False
         )
     except Exception as e:
-        print(f"Warning: failed to kill existing qemu instances: {e}", file=sys.stderr)
+        ts_print(f"Warning: failed to kill existing qemu instances: {e}", file=sys.stderr)
 
+    device_fd = open_device()
     if not args.resume:
         try:
             reset_log_directory()
+            ioctl_reset_state(device_fd)
         except Exception as e:
-            print(f"Failed to reset log directory: {e}", file=sys.stderr)
+            ts_print(f"Failed to reset log directory: {e}", file=sys.stderr)
             return 1
     else:
         create_log_directory_if_missing()
@@ -673,19 +625,17 @@ def main() -> int:
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
-
-    device_fd = open_device()
-
     try:
         ioctl_close_log(device_fd)
     except Exception:
         pass
 
     ioctl_open_log(device_fd)
+    os.close(device_fd)
 
     threads = []
     for core_id in cores:
-        t = threading.Thread(target=core_worker, args=(core_id, device_fd, args), name=f"core-{core_id}", daemon=True)
+        t = threading.Thread(target=core_worker, args=(core_id, args), name=f"core-{core_id}", daemon=True)
         t.start()
         threads.append(t)
 
@@ -705,7 +655,7 @@ def main() -> int:
 
 if __name__ == "__main__":
     if not check_ssd_mounted():
-        print(f"ERROR: SSD directory {SSD_DIR} is not mounted or writable.", file=sys.stderr)
+        ts_print(f"ERROR: SSD directory {SSD_DIR} is not mounted or writable.", file=sys.stderr)
         raise SystemExit(1)
 
     raise SystemExit(main())

@@ -33,10 +33,7 @@ static __always_inline uint64_t __read_msr(uint32_t msr_register)
 static __always_inline int ibs_this_cpu(void)
 {
 	int cpu;
-
-	preempt_disable();
 	cpu = smp_processor_id();
-	preempt_enable();
 
 	if (cpu < 0 || cpu >= IBS_MAX_CPUS)
 		return -1;

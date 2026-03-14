@@ -1940,7 +1940,7 @@ static uint64_t REGISTER_VALUE = 0x9900000000;
 #define GUEST_PHYS_ADDR_END 	0x005FFFFF
 #define GUEST_PHYS_PAGE_SIZE 	((GUEST_PHYS_ADDR_END - GUEST_PHYS_ADDR_START + 1)/PAGE_SIZE)
 
-#define MAX_INSTRUCTION_COUNT 6000
+#define MAX_INSTRUCTION_COUNT 2500
 #define PER_INSTRUCTION_COUNTER 5
 
 static DEFINE_SPINLOCK(setup_lock);
@@ -2455,9 +2455,14 @@ static void setup_fuzzer(struct kvm_vcpu *vcpu)
 		for(int i = 0; i < MAX_CPU_COUNT; i++) {
 			global_fuzz_state.cpu_state[i].search_range.started = false;
 		}
-		move_next_range();
 	}
 	spin_unlock_irqrestore(&setup_lock, flags);
+
+	if(!fuzz_state->search_range.started)
+	{
+		move_next_range();
+		move_next_instruction();
+	}
 
 	fuzz_state->inj.i.len = 1;
 	fuzz_state->current_op = INSTRUCTION;
@@ -2611,7 +2616,6 @@ static int bp_interception(struct kvm_vcpu *vcpu)
 static int ud_interception(struct kvm_vcpu *vcpu)
 {
 	u64 rid = kvm_register_read(vcpu, VCPU_REGS_RDI);
-	pr_info("[Fuzzer] UD interception, RID: 0x%llx\n", rid);
 	if (rid == MAGIC_VALUE) {
 		setup_fuzzer(vcpu);
 		write_instr(vcpu, REGISTER_VALUE, 0);
@@ -6271,7 +6275,10 @@ static long fuzz_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		return 0;
 
 	case FUZZ_IOC_RESET_STATE:
+		unsigned long flags;
+		spin_lock_irqsave(&setup_lock, flags);
 		global_fuzz_state.total_range.started = false;
+		spin_unlock_irqrestore(&setup_lock, flags);
 		return 0;
     default:
         return -EINVAL;
