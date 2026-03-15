@@ -1998,10 +1998,8 @@ static noinline void __used preamble(void)
 
 static void __maybe_unused dump_instruction(void)
 {
-	preempt_disable();
 	int cpu = smp_processor_id();
 	cpu_state_t*fuzz_state = &global_fuzz_state.cpu_state[cpu];
-	preempt_enable();
 	
 	pr_info("[Fuzzer] instruction:fuzz_state.inj.i.bytes on CPU %d:", cpu);
 	for(int i = 0; i < fuzz_state->inj.i.len; i++)		{
@@ -2012,10 +2010,8 @@ static void __maybe_unused dump_instruction(void)
 
 static void save_reg_state(struct kvm_vcpu *vcpu)
 {
-	preempt_disable();
 	int cpu = smp_processor_id();
 	cpu_state_t*fuzz_state = &global_fuzz_state.cpu_state[cpu];
-	preempt_enable();
 	
 	fuzz_state->saved_regs.rax = kvm_register_read(vcpu, VCPU_REGS_RAX);
 	fuzz_state->saved_regs.rbx = kvm_register_read(vcpu, VCPU_REGS_RBX);
@@ -2064,10 +2060,8 @@ static void set_gpr(uint64_t value, struct kvm_vcpu *vcpu)
 
 static void write_instr(struct kvm_vcpu *vcpu, uint64_t value, uint64_t offset)
 {
-	preempt_disable();
 	int cpu = smp_processor_id();
 	cpu_state_t*fuzz_state = &global_fuzz_state.cpu_state[cpu];
-	preempt_enable();
 
 
 	uint32_t i = 0;
@@ -2090,10 +2084,8 @@ static void write_instr(struct kvm_vcpu *vcpu, uint64_t value, uint64_t offset)
 
 static void write_result(uint8_t exit_code)
 {
-	preempt_disable();
 	int cpu = smp_processor_id();
 	cpu_state_t*fuzz_state = &global_fuzz_state.cpu_state[cpu];
-	preempt_enable();
 
 	result_t* res = &fuzz_state->result;
 	res->length = fuzz_state->inj.i.len;
@@ -2186,10 +2178,8 @@ static void fuzz_restore_segs(struct kvm_vcpu *vcpu, struct vmcb_save_area *s)
 static void reset_state(struct kvm_vcpu *vcpu)
 {
 	
-	preempt_disable();
 	int cpu = smp_processor_id();
 	cpu_state_t*fuzz_state = &global_fuzz_state.cpu_state[cpu];
-	preempt_enable();
 
 	struct vmcb_save_area *s = &fuzz_state->saved_state;
 	fuzz_clear_pending_events(vcpu);
@@ -2248,10 +2238,8 @@ static ignore_op_t opcode_blacklist[] = {
 
 static bool has_opcode(const uint8_t *op, size_t len)
 {
-    preempt_disable();
 	int cpu = smp_processor_id();
 	cpu_state_t *fuzz_state = &global_fuzz_state.cpu_state[cpu];
-	preempt_enable();
 	
 	return memcmp(fuzz_state->inj.i.bytes, op, len) == 0;
 }
@@ -2315,10 +2303,8 @@ static bool move_next_range(void)
 	unsigned long flags;
 	spin_lock_irqsave(&range_lock, flags);
 
-	preempt_disable();
 	int cpu = smp_processor_id();
 	cpu_state_t *fuzz_state = &global_fuzz_state.cpu_state[cpu];
-	preempt_enable();
 
 	fuzz_state->search_range.started = false;
 	if (memcmp(global_fuzz_state.range_marker.bytes,
@@ -2352,10 +2338,8 @@ static bool move_next_range(void)
 
 static int move_next_instruction(void)
 {
-	preempt_disable();
 	int cpu = smp_processor_id();
 	cpu_state_t *fuzz_state = &global_fuzz_state.cpu_state[cpu];
-	preempt_enable();
 
 	if (!fuzz_state->search_range.started) {
 		init_inj(&fuzz_state->search_range.start, &fuzz_state->inj);
@@ -2402,11 +2386,9 @@ static int move_next_instruction(void)
 
 static void setup_fuzzer(struct kvm_vcpu *vcpu)
 {
-	preempt_disable();
 	int cpu = smp_processor_id();
 	cpu_state_t* fuzz_state = &global_fuzz_state.cpu_state[cpu];
-	preempt_enable();
-	
+
 	pr_info("[Fuzzer] Setting up fuzzer\n");
 	svm_copy_vmrun_state(&fuzz_state->saved_state, &to_svm(vcpu)->vmcb->save);
 	fuzz_state->saved_state.rip += UD2_SIZE; //skip UD2 instruction
@@ -2478,10 +2460,8 @@ static void setup_fuzzer(struct kvm_vcpu *vcpu)
 
 static void fetch_microop(int exit_code, struct kvm_vcpu *vcpu)
 {
-	preempt_disable();
 	int cpu = smp_processor_id();
 	cpu_state_t* fuzz_state = &global_fuzz_state.cpu_state[cpu];
-	preempt_enable();
 	
 	if (fuzz_state->current_op == INSTRUCTION) {
 		fuzz_state->current_op = MICROOP;
@@ -2527,10 +2507,8 @@ static void fetch_microop(int exit_code, struct kvm_vcpu *vcpu)
 
 static int pf_interception(struct kvm_vcpu *vcpu)
 {
-	preempt_disable();
 	int cpu = smp_processor_id();
 	cpu_state_t* fuzz_state = &global_fuzz_state.cpu_state[cpu];
-	preempt_enable();
 	
 	struct vcpu_svm *svm = to_svm(vcpu);
 	uint64_t cr2 = svm->vmcb->control.exit_info_2; //contains cr2 value at the time of page fault
@@ -4881,10 +4859,8 @@ static void __maybe_unused read_ibs_ctrl(u64 uop_cnt)
 
 	u64 branch_target_rip = __read_msr(BP_IBSTGT_RIP);
 
-	preempt_disable();
 	int cpu = smp_processor_id();
 	cpu_state_t* fuzz_state = &global_fuzz_state.cpu_state[cpu];
-	preempt_enable();
 
 	if (fuzz_state->current_op == MICROOP && fuzz_state->file_open) {
 		ibs_log_event(rip_value, uop_cnt, opData3, opData1, phys_addr, lin_addr,
@@ -4943,10 +4919,8 @@ static noinstr void svm_vcpu_enter_exit(struct kvm_vcpu *vcpu,
 
 	amd_clear_divider();
 
-	preempt_disable();
 	int cpu = smp_processor_id();
 	cpu_state_t* fuzz_state = &global_fuzz_state.cpu_state[cpu];
-	preempt_enable();
 
 	if (sev_es_guest(vcpu->kvm)) {
 			__svm_sev_es_vcpu_run(svm, spec_ctrl_intercepted,

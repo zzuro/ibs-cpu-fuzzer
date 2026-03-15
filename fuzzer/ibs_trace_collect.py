@@ -337,6 +337,7 @@ def trace_loop_with_timeout(
         return 1
 
     last_received = time.monotonic()
+    last_snapshot_time = time.monotonic()
     ts_print(f"[core {core_id}] Starting trace loop on {trace_path} (timeout={inactivity_timeout}s)", file=sys.stderr)
 
     current_insn_bytes = None
@@ -391,6 +392,15 @@ def trace_loop_with_timeout(
                 current_insn_bytes = None
                 last_received = time.monotonic()
                 continue
+
+            if now - last_snapshot_time >= 60 * 10:
+                try:
+                    st = ioctl_get_state(device_fd)
+                    dump_state_to_file(st, on_timeout_state_path.with_suffix(".snapshot.bin"))
+                    ts_print(f"[core {core_id}] Periodic snapshot saved to {on_timeout_state_path.with_suffix('.snapshot.bin')}", file=sys.stderr)
+                except Exception as e:
+                    ts_print(f"[core {core_id}] WARN: failed to save periodic snapshot: {e}", file=sys.stderr)
+                last_snapshot_time = now
 
             header_blob = read_exact_or_none(relay_fd, HEADER_SIZE)
             if header_blob is None:
