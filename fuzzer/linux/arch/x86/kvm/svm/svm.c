@@ -2474,13 +2474,11 @@ static void fetch_microop(int exit_code, struct kvm_vcpu *vcpu)
 		fuzz_state->per_instruction_counter = 0;
 		write_instr(vcpu, REGISTER_VALUE, 0);
 		reset_state(vcpu);
-
 	}
 	else if(fuzz_state->current_op == MICROOP && fuzz_state->fetch_counter <= MAX_INSTRUCTION_COUNT && fuzz_state->per_instruction_counter < PER_INSTRUCTION_COUNTER)
 	{
 		write_instr(vcpu, REGISTER_VALUE, fuzz_state->per_instruction_counter * 1024); //increase offset to see if it affects micro-op 
 		reset_state(vcpu);
-		save_reg_state(vcpu);
 		fuzz_state->per_instruction_counter++;
 	}
 	
@@ -4840,8 +4838,10 @@ static void __maybe_unused write_ibs_ctrl(u64 instruction_offset)
 
 
 
-static void __maybe_unused read_ibs_ctrl(u64 uop_cnt) 
+static void __maybe_unused read_ibs_ctrl(u64 uop_cnt, struct kvm_vcpu *vcpu) 
 {
+	
+	save_reg_state(vcpu);
 	union ibs_op_ctl ibs_op_ctl_data;
 	ibs_op_ctl_data.val = __read_msr(IBS_OP_CTL);
 
@@ -4933,7 +4933,7 @@ static noinstr void svm_vcpu_enter_exit(struct kvm_vcpu *vcpu,
 		__svm_vcpu_run(svm, spec_ctrl_intercepted);
 
 		if (fuzz_state->current_op == MICROOP && fuzz_state->file_open && fuzz_state->fetch_counter <= MAX_INSTRUCTION_COUNT) {
-			read_ibs_ctrl(fuzz_state->fetch_counter);
+			read_ibs_ctrl(fuzz_state->fetch_counter, vcpu);
 		}
 	}
 

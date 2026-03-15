@@ -308,9 +308,21 @@ def extract_bytes(source_file: str) -> bytes:
     hex_bytes = re.findall(r'\\x([0-9a-fA-F]{2})', source_file)
     return bytes(int(b, 16) for b in hex_bytes)
 
+def newest_files(path="../logs/ibs_log/", n=32):
+    files = [
+        os.path.join(path, f)
+        for f in os.listdir(path)
+        if os.path.isfile(os.path.join(path, f))
+    ]
+    
+    files.sort(key=os.path.getmtime, reverse=True)
+    return files[:n]
+
 
 def main() -> int:
 
+    last_files = newest_files("../logs/ibs_log/", n=32)
+    
     try:
         dev_fd = open_device()
     except OSError as e:
@@ -318,34 +330,34 @@ def main() -> int:
         return 1
 
     
-    it = LOG_DIR.iterdir()
+    # it = LOG_DIR.iterdir()
     
-    # Find the first subdirectory
-    first_subdir = None
-    for item in it:
-        if item.is_dir() and len(list(item.glob("*.json"))) > 0:
-            first_subdir = item
-            break
+    # # Find the first subdirectory
+    # first_subdir = None
+    # for item in it:
+    #     if item.is_dir() and len(list(item.glob("*.json"))) > 0:
+    #         first_subdir = item
+    #         break
     
-    if first_subdir is None:
-        print(f"No subdirectories found in {LOG_DIR}", file=sys.stderr)
-        os.close(dev_fd)
-        return 1
+    # if first_subdir is None:
+    #     print(f"No subdirectories found in {LOG_DIR}", file=sys.stderr)
+    #     os.close(dev_fd)
+    #     return 1
     
-    # Get the first log file from the subdirectory
-    iter = first_subdir.iterdir()
-    for _ in range(1):
-        first_file = next(iter)
+    # # Get the first log file from the subdirectory
+    # iter = first_subdir.iterdir()
+    # for _ in range(1):
+    #     first_file = next(iter)
 
 
-    print(f"Using log file: {first_file}", file=sys.stderr)
-    with first_file.open() as f:
-        data = json.load(f) 
+    # print(f"Using log file: {first_file}", file=sys.stderr)
+    # with first_file.open() as f:
+    #     data = json.load(f) 
 
-    instr = extract_bytes(data["source_file"])
+    instr = extract_bytes(last_files[2])
     st = set_instruction(instr, len(instr))
     ioctl_set_state(dev_fd, st)
-    ioctl_set_register_value(dev_fd, 0x00005480000000)
+    ioctl_set_register_value(dev_fd, 0xF009900000000)
     qemu_script = Path("./../vms/qemu.sh")
 
     try:
