@@ -16,6 +16,12 @@ def run(cmd, password=None):
     else:
         subprocess.run(cmd, check=True)
 
+def get_cpu_model():
+    with open("/proc/cpuinfo") as f:
+        for line in f:
+            if "model name" in line:
+                return line.split(":", 1)[1].strip()
+
 # 1. create logs directory if it does not exist
 if not os.path.isdir("./logs"):
     os.makedirs("./logs", exist_ok=True)
@@ -29,14 +35,18 @@ run([
     "./logs"
 ], PASSWORD)
 
-# 3. mount local SSD
-run([
-    "sudo",
-    "mount",
-    "/dev/sda2",
-    "/mnt/ssd/"
-])
+cpu_model = get_cpu_model()
 
+# 3. mount local SSD
+if "AMD EPYC 7313 16-Core Processor" in cpu_model:
+    subprocess.run([
+        "sudo",
+        "mount",
+        "/dev/sda2",
+        "/mnt/ssd/"
+    ], check=True)
+
+    
 # 4. mount truenas via sshfs
 run([
     "sudo",
