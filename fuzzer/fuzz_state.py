@@ -141,3 +141,11 @@ class FuzzerState(ctypes.Structure):
 
         ("file_open", ctypes.c_bool),
     ]
+
+class FuzzerStateSnapshot(ctypes.Structure):
+    _fields_ = [
+        ("total_range", Range),
+        ("range_marker", Insn),
+
+        ("done", ctypes.c_bool),
+    ]

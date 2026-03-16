@@ -36,6 +36,8 @@ FUZZ_IOC_OPEN_LOG = _IO(ord('a'), ord('e'))
 FUZZ_IOC_CLOSE_LOG = _IO(ord('a'), ord('f'))
 FUZZ_IOC_MOVE_NEXT_INSTR = _IO(ord('a'), ord('g'))
 FUZZ_IOC_RESET_STATE = _IO(ord('a'), ord('i'))
+FUZZ_IOC_SET_GLOBAL_FUZZ_STATE = _IOW(ord('a'), ord('j'), FuzzerStateSnapshot)
+FUZZ_IOC_GET_GLOBAL_FUZZ_STATE = _IOR(ord('a'), ord('k'), FuzzerStateSnapshot)
 
 stop_event = threading.Event()
 print_lock = threading.Lock()
@@ -167,6 +169,20 @@ def ioctl_reset_state(fd: int) -> None:
         e = ctypes.get_errno()
         raise OSError(e, f"ioctl(RESET_STATE) failed: {os.strerror(e)}")
 
+def ioctl_set_global_fuzz_state(fd: int, snapshot: FuzzerStateSnapshot) -> None:
+    rc = _ioctl(fd, FUZZ_IOC_SET_GLOBAL_FUZZ_STATE, ctypes.byref(snapshot))
+    if rc < 0:
+        e = ctypes.get_errno()
+        raise OSError(e, f"ioctl(SET_GLOBAL_FUZZ_STATE) failed: {os.strerror(e)}")
+
+def ioctl_get_global_fuzz_state(fd: int) -> FuzzerStateSnapshot:
+    snapshot = FuzzerStateSnapshot()
+    rc = _ioctl(fd, FUZZ_IOC_GET_GLOBAL_FUZZ_STATE, ctypes.byref(snapshot))
+    if rc < 0:
+        e = ctypes.get_errno()
+        raise OSError(e, f"ioctl(GET_GLOBAL_FUZZ_STATE) failed: {os.strerror(e)}")
+    return snapshot
+
 def default_reset_state() -> FuzzerState:
     st = FuzzerState()
 
@@ -198,6 +214,11 @@ def dump_state_to_file(st: FuzzerState, path: Path) -> None:
     raw = ctypes.string_at(ctypes.byref(st), ctypes.sizeof(st))
     path.write_bytes(raw)
 
+def dump_global_state_to_file(snapshot: FuzzerStateSnapshot, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    raw = ctypes.string_at(ctypes.byref(snapshot), ctypes.sizeof(snapshot))
+    path.write_bytes(raw)
+
 def load_state_from_file(path: Path) -> FuzzerState:
     raw = path.read_bytes()
     if len(raw) != ctypes.sizeof(FuzzerState):
@@ -207,6 +228,16 @@ def load_state_from_file(path: Path) -> FuzzerState:
     st = FuzzerState()
     ctypes.memmove(ctypes.byref(st), raw, len(raw))
     return st
+
+def load_global_state_from_file(path: Path) -> FuzzerStateSnapshot:
+    raw = path.read_bytes()
+    if len(raw) != ctypes.sizeof(FuzzerStateSnapshot):
+        raise ValueError(
+            f"Bad global state file size: got {len(raw)} bytes, expected {ctypes.sizeof(FuzzerStateSnapshot)}"
+        )
+    snapshot = FuzzerStateSnapshot()
+    ctypes.memmove(ctypes.byref(snapshot), raw, len(raw))
+    return snapshot
 
 def dump_fuzzer_state_pretty(st: FuzzerState) -> None:
     def insn_to_str(insn):
@@ -397,7 +428,6 @@ def trace_loop_with_timeout(
                 try:
                     st = ioctl_get_state(device_fd)
                     dump_state_to_file(st, on_timeout_state_path.with_suffix(".snapshot.bin"))
-                    ts_print(f"[core {core_id}] Periodic snapshot saved to {on_timeout_state_path.with_suffix('.snapshot.bin')}", file=sys.stderr)
                 except Exception as e:
                     ts_print(f"[core {core_id}] WARN: failed to save periodic snapshot: {e}", file=sys.stderr)
                 last_snapshot_time = now
@@ -492,7 +522,7 @@ def core_worker(core_id: int, args) -> None:
     qemu_proc = None
 
     os.sched_setaffinity(0, {core_id})
-    state_path = Path(str(args.state_file).replace(".bin", f".core{core_id}.bin"))
+    state_path = Path(str(args.state_file).replace(".bin", f".core{core_id}.snapshot.bin"))
     qemu_script = Path(args.qemu_script)
 
     try:
@@ -631,6 +661,9 @@ def main() -> int:
             return 1
     else:
         create_log_directory_if_missing()
+        if Path(args.state_file).exists():
+            snapshot = load_global_state_from_file(Path(args.state_file))
+            ioctl_set_global_fuzz_state(device_fd, snapshot)
 
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
@@ -641,7 +674,6 @@ def main() -> int:
         pass
 
     ioctl_open_log(device_fd)
-    os.close(device_fd)
 
     threads = []
     for core_id in cores:
@@ -650,9 +682,17 @@ def main() -> int:
         threads.append(t)
 
     try:
+        last_snapshot_time = time.monotonic()
         while any(t.is_alive() for t in threads):
             for t in threads:
                 t.join(timeout=0.2)
+            if time.monotonic() - last_snapshot_time >= 60 * 10:
+                try:
+                    snapshot = ioctl_get_global_fuzz_state(device_fd)
+                    dump_global_state_to_file(snapshot, Path(args.state_file))
+                except Exception as e:
+                    ts_print(f"Failed to save global fuzz state snapshot: {e}", file=sys.stderr)
+                last_snapshot_time = time.monotonic()
             if stop_event.is_set():
                 break
     except KeyboardInterrupt:
@@ -661,6 +701,7 @@ def main() -> int:
     for t in threads:
         t.join()
 
+    os.close(device_fd)
     return 0
 
 if __name__ == "__main__":

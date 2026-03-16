@@ -98,3 +98,10 @@ typedef struct fuzzer_state {
 	bool done;
 
 } fuzzer_state_t; 
+
+typedef struct fuzzer_state_snapshot {
+	range_t total_range;
+	insn_t range_marker;
+
+	bool done;
+} fuzzer_state_snapshot_t;

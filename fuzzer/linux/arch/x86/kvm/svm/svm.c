@@ -6209,6 +6209,8 @@ static void __svm_exit(void)
 #define FUZZ_IOC_MOVE_NEXT_INSTR _IO('a', 'g')
 #define FUZZ_IOC_SET_REGISTER_VALUE _IOW('a', 'h', uint64_t)
 #define FUZZ_IOC_RESET_STATE _IO('a', 'i')
+#define FUZZ_IOC_SET_GLOBAL_FUZZ_STATE _IOW('a', 'j', fuzzer_state_snapshot_t)
+#define FUZZ_IOC_GET_GLOBAL_FUZZ_STATE _IOR('a', 'k', fuzzer_state_snapshot_t)
 
 
 static long fuzz_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
@@ -6218,18 +6220,41 @@ static long fuzz_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	int cpu = smp_processor_id();
 	cpu_state_t* fuzz_state = &global_fuzz_state.cpu_state[cpu];
 	preempt_enable();
+
+	unsigned long flags;
+	fuzzer_state_snapshot_t temp_state;
 	
 	switch (cmd) {
     case FUZZ_IOC_GET_STATE:
         if (copy_to_user((void __user *)arg, fuzz_state, sizeof(cpu_state_t)))
-            return -EFAULT;
+            return -EFAULT;		
         return 0;
 
     case FUZZ_IOC_SET_STATE:
         if (copy_from_user(fuzz_state, (void __user *)arg, sizeof(cpu_state_t)))
             return -EFAULT;
-
         return 0;
+
+	case FUZZ_IOC_SET_GLOBAL_FUZZ_STATE:
+		if(copy_from_user(&temp_state, (void __user *)arg, sizeof(fuzzer_state_snapshot_t)))
+			return -EFAULT;
+		
+		spin_lock_irqsave(&setup_lock, flags);
+		memcpy(&global_fuzz_state.range_marker, &temp_state.range_marker, sizeof(global_fuzz_state.range_marker));
+		memcpy(&global_fuzz_state.total_range, &temp_state.total_range, sizeof(global_fuzz_state.total_range));
+		global_fuzz_state.done = temp_state.done;
+		spin_unlock_irqrestore(&setup_lock, flags);
+		return 0;
+
+	case FUZZ_IOC_GET_GLOBAL_FUZZ_STATE:
+		spin_lock_irqsave(&setup_lock, flags);
+		memcpy(&temp_state.range_marker, &global_fuzz_state.range_marker, sizeof(temp_state.range_marker));
+		memcpy(&temp_state.total_range, &global_fuzz_state.total_range, sizeof(temp_state.total_range));
+		temp_state.done = global_fuzz_state.done;
+		spin_unlock_irqrestore(&setup_lock, flags);
+		if(copy_to_user((void __user *)arg, &temp_state, sizeof(fuzzer_state_snapshot_t)))
+			return -EFAULT;
+		return 0;
 
 	case FUZZ_IOC_OPEN_LOG:
 		ibs_log_open();
