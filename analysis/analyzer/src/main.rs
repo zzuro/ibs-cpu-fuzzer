@@ -133,6 +133,14 @@ fn process_chunk(
             continue;
         }
 
+        if let Some(name) = file.file_name().and_then(|n| n.to_str()) {
+            //skip snapshot files from the fuzzer
+            if name.starts_with("fuzz_state") {
+                increment += 1;
+                continue;
+            }
+        }
+
         match analyze_bin(&file) {
             Ok(Some(finding)) => {
                 write_finding(&findings_dir, &finding)

@@ -356,23 +356,15 @@ pub fn analyze_bin(path: &Path) -> Result<Option<Finding>> {
 
     let lin_phys_conflicts = lf
         .clone()
-        .with_columns([
-            col("phys_addr").min().over([col("uop_cnt"), col("lin_addr")]).alias("group_phys_min"),
-            col("phys_addr").max().over([col("uop_cnt"), col("lin_addr")]).alias("group_phys_max"),
-            col("phys_addr").n_unique().over([col("uop_cnt"), col("lin_addr")]).alias("group_n_unique"),
+        .filter(col("lin_addr").neq(lit(0u64)))
+        .group_by([col("uop_cnt"), col("lin_addr")])
+        .agg([
+            col("phys_addr").n_unique().alias("group_n_unique"),
         ])
-        .with_columns([
-            col("group_n_unique").gt(lit(3)).and(
-                (col("phys_addr") - col("group_phys_min")).gt_eq(lit(1024u64))
-                    .or((col("group_phys_max") - col("phys_addr")).gt_eq(lit(1024u64)))
-            )
-            .alias("lin_phys_conflict_row"),
-        ])
+        .filter(col("group_n_unique").gt(lit(1)))
         .group_by([col("uop_cnt")])
         .agg([
-            col("lin_phys_conflict_row")
-                .any(false)
-                .alias("flag_same_lin_diff_phys"),
+            lit(true).alias("flag_same_lin_diff_phys"),
         ]);
 
     let seq = lf

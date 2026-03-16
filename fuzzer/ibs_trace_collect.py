@@ -30,7 +30,7 @@ TRACE_BASE = "/sys/kernel/debug/ibs_logger/cpu"
 POLL_SLEEP_SEC = 0.05
 BIN_BUFFER_SIZE = 1024 * 1024
 
-SNAPSHOT_TIMEOUT = 60 * 2  # Save a snapshot every 10 minutes
+SNAPSHOT_TIMEOUT = 60 * 10  # Save a snapshot every 10 minutes
 
 FUZZ_IOC_GET_STATE = _IOR(ord('a'), ord('c'), FuzzerState)
 FUZZ_IOC_SET_STATE = _IOW(ord('a'), ord('d'), FuzzerState)
