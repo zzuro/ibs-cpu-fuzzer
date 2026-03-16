@@ -30,6 +30,8 @@ TRACE_BASE = "/sys/kernel/debug/ibs_logger/cpu"
 POLL_SLEEP_SEC = 0.05
 BIN_BUFFER_SIZE = 1024 * 1024
 
+SNAPSHOT_TIMEOUT = 60 * 2  # Save a snapshot every 10 minutes
+
 FUZZ_IOC_GET_STATE = _IOR(ord('a'), ord('c'), FuzzerState)
 FUZZ_IOC_SET_STATE = _IOW(ord('a'), ord('d'), FuzzerState)
 FUZZ_IOC_OPEN_LOG = _IO(ord('a'), ord('e'))
@@ -424,10 +426,10 @@ def trace_loop_with_timeout(
                 last_received = time.monotonic()
                 continue
 
-            if now - last_snapshot_time >= 60 * 10:
+            if now - last_snapshot_time >= SNAPSHOT_TIMEOUT:
                 try:
                     st = ioctl_get_state(device_fd)
-                    dump_state_to_file(st, on_timeout_state_path.with_suffix(".snapshot.bin"))
+                    dump_state_to_file(st, on_timeout_state_path)
                 except Exception as e:
                     ts_print(f"[core {core_id}] WARN: failed to save periodic snapshot: {e}", file=sys.stderr)
                 last_snapshot_time = now
@@ -686,7 +688,7 @@ def main() -> int:
         while any(t.is_alive() for t in threads):
             for t in threads:
                 t.join(timeout=0.2)
-            if time.monotonic() - last_snapshot_time >= 60 * 10:
+            if time.monotonic() - last_snapshot_time >= SNAPSHOT_TIMEOUT:
                 try:
                     snapshot = ioctl_get_global_fuzz_state(device_fd)
                     dump_global_state_to_file(snapshot, Path(args.state_file))
