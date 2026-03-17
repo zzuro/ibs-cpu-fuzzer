@@ -117,14 +117,6 @@ def read_exact_or_none(f, n: int) -> bytes | None:
     return b"".join(chunks)
 
 
-# ----------------------------
-# Per-thread record handling
-# ----------------------------
-
-class WorkerContext:
-    def __init__(self, core_id: int):
-        self.core_id = core_id
-
 
 # ----------------------------
 # Helpers: device state I/O
@@ -359,8 +351,6 @@ def trace_loop_with_timeout(
     qemu_script: Path
 ) -> int:
     trace_path = f"{TRACE_BASE}{core_id}/trace{core_id}"
-    ctx = WorkerContext(core_id)
-
     crash_log = LOG_DIR / f"timeouts_core{core_id}.log"
 
     try:

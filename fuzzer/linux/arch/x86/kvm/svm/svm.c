@@ -2233,6 +2233,7 @@ static ignore_op_t opcode_blacklist[] = {
     { (const uint8_t*)"\x0f\x01\xc9", 3, "MWAIT" },
     { (const uint8_t*)"\xf4", 1, "HLT" },
     { (const uint8_t*)"\xf3\x90", 2, "PAUSE" },
+	{ (const uint8_t*)"\xf0", 1, "LOCK PREFIX" },
     { NULL, 0, NULL }
 };
 
@@ -2350,6 +2351,7 @@ static int move_next_instruction(void)
 			fuzz_state->inj.index++;
 		}
 
+redo:
     	fuzz_state->inj.last_len = fuzz_state->result.length;
     	fuzz_state->inj.i.bytes[fuzz_state->inj.index]++; 
 
@@ -2368,11 +2370,11 @@ static int move_next_instruction(void)
 	fuzz_state->search_range.started = true;
 	fuzz_state->inj.i.len = 1;
 
-	if(filter_instruction()) {
-		return move_next_instruction();
+	if (fuzz_state->inj.index < 0) {
+		return 0;
 	}
 
-	if(memcmp(fuzz_state->inj.i.bytes, fuzz_state->search_range.end.bytes, sizeof(fuzz_state->inj.i.bytes)) > 0) {
+	if(memcmp(fuzz_state->inj.i.bytes, fuzz_state->search_range.end.bytes, sizeof(fuzz_state->inj.i.bytes)) >= 0) {
 		if (!move_next_range()) {
 			return 0;
 		} else {
@@ -2380,7 +2382,13 @@ static int move_next_instruction(void)
 		}
 	}
 
-	return fuzz_state->inj.index >= 0;; 
+	if(filter_instruction()) {
+		pr_info("[Fuzzer] Skipping instruction due to filter\n");
+		dump_instruction();
+		goto redo;
+	}
+
+	return 1;
 }
 
 
