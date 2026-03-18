@@ -10,35 +10,36 @@ use crate::writer::{Finding, ResultEntry};
 
 const PAGE_SIZE: u64 = 4096;
 
-const IBS_REC_HPA: u32 = 1;
-const IBS_REC_EVENT: u32 = 2;
+const IBS_REC_HPA: u32 = 2;
+const IBS_REC_EVENT: u32 = 3;
 
-const IBS_OP_LOAD: u8 = 0;
-const IBS_OP_BRANCH: u8 = 2;
+const IBS_OP_LOAD: u8 = 1;
+const IBS_OP_BRANCH: u8 = 3;
 
-#[repr(C)]
-#[derive(Clone, Copy)]
+#[repr(C, packed)]
+#[derive(Clone, Copy, Debug)]
 struct IbsRecordHeader {
-    record_len: u32,
     record_type: u32,
-    instruction_len: u8,
-    instruction: [u8; 15],
+    record_len: u16,
+    instruction_len: u16,
+    instruction: [u8; 16],
 }
 
-#[repr(C)]
-#[derive(Clone, Copy)]
+#[repr(C, packed)]
+#[derive(Clone, Copy, Debug)]
 struct IbsHpaRecord {
-    header: IbsRecordHeader,
+    hdr: IbsRecordHeader,
     hpa: u64,
 }
 
-#[repr(C)]
-#[derive(Clone, Copy)]
+#[repr(C, packed)]
+#[derive(Clone, Copy, Debug)]
 struct IbsEventRecord {
-    header: IbsRecordHeader,
+    hdr: IbsRecordHeader,
 
     rip: u64,
     uop_cnt: u64,
+
     phys_addr: u64,
     lin_addr: u64,
     branch_target_rip: u64,
@@ -61,8 +62,9 @@ struct IbsEventRecord {
     rbp: u64,
     rflags: u64,
 
-    op_type: u8,
-    mem_width: u8,
+    op_type: u32,
+    mem_width: u32,
+
     dc_uc_mem_acc: u8,
     dc_wc_mem_acc: u8,
     dc_miss: u8,
@@ -117,7 +119,8 @@ fn parse_bin_to_lazyframe(path: &Path) -> Result<ParsedTrace> {
     let mut rsp = Vec::<u64>::new();
     let mut rbp = Vec::<u64>::new();
 
-    let mut op_type = Vec::<u8>::new();
+    let mut op_type = Vec::<u32>::new();
+    let mut mem_width = Vec::<u32>::new();
     let mut dc_uc_mem_acc = Vec::<u8>::new();
     let mut op_brn_misp = Vec::<u8>::new();
 
@@ -198,6 +201,7 @@ fn parse_bin_to_lazyframe(path: &Path) -> Result<ParsedTrace> {
                 rbp.push(rec.rbp);
 
                 op_type.push(rec.op_type);
+                mem_width.push(rec.mem_width);
                 dc_uc_mem_acc.push(rec.dc_uc_mem_acc);
                 op_brn_misp.push(rec.op_brn_misp);
             }
@@ -213,8 +217,7 @@ fn parse_bin_to_lazyframe(path: &Path) -> Result<ParsedTrace> {
         }
 
         off += rec_len;
-    }
-
+    }   
 
     let df = DataFrame::new_infer_height(vec![
         Series::new("uop_cnt".into(), uop_cnt).into(),
@@ -239,7 +242,8 @@ fn parse_bin_to_lazyframe(path: &Path) -> Result<ParsedTrace> {
         Series::new("rsp".into(), rsp).into(),
         Series::new("rbp".into(), rbp).into(),
 
-        UInt8Chunked::from_vec("op_type".into(), op_type).into_series().into(),
+        UInt32Chunked::from_vec("op_type".into(), op_type).into_series().into(),
+        UInt32Chunked::from_vec("mem_width".into(), mem_width).into_series().into(),
         UInt8Chunked::from_vec("dc_uc_mem_acc".into(), dc_uc_mem_acc).into_series().into(),
         UInt8Chunked::from_vec("op_brn_misp".into(), op_brn_misp).into_series().into(),
     ])?;
@@ -346,7 +350,7 @@ pub fn analyze_bin(path: &Path) -> Result<Option<Finding>> {
         col("dc_uc_mem_acc").eq(lit(1u8)).alias("flag_dc_uc_mem_acc"),
     ]);
 
-    let threshold = 5 * 1024u64;
+    let threshold = 8 * 1024u64;
     let reg_change_expr = regs
         .iter()
         .map(|r| (col(*r).max() - col(*r).min()).gt(lit(threshold)))

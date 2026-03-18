@@ -119,9 +119,10 @@ def main() -> int:
         print(f"directory not found: {LOG_DIR}", file=sys.stderr)
         return 1
 
-    files = sorted(LOG_DIR.glob("*.bin"))
-    print(f"Found {len(files)} binary trace files in {LOG_DIR}")
+    # files = sorted(LOG_DIR.glob("*.bin"))
+    # print(f"Found {len(files)} binary trace files in {LOG_DIR}")
 
+    files = [Path("/home/avezzu/ibs-cpu-fuzzer/logs/ibs_log/ibs_\\x00\\x00.bin")] 
     for bin_path in files:
         print(f"Converting {bin_path.name} -> {bin_path.with_suffix('.csv').name}")
         try:
