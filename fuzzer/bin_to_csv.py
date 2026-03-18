@@ -7,7 +7,7 @@ from pathlib import Path
 from relayfs import *
 from fuzz_state import *
 
-LOG_DIR = Path("/mnt/truenas/ibs_log")
+LOG_DIR = Path("/mnt/ssd/ibs_log")
 
 HEADER_SIZE = ctypes.sizeof(IbsRecordHeader)
 HPA_SIZE = ctypes.sizeof(IbsHpaRecord)
@@ -119,11 +119,12 @@ def main() -> int:
         print(f"directory not found: {LOG_DIR}", file=sys.stderr)
         return 1
 
-    # files = sorted(LOG_DIR.glob("*.bin"))
-    # print(f"Found {len(files)} binary trace files in {LOG_DIR}")
+    files = sorted(LOG_DIR.glob("*.bin"))
+    print(f"Found {len(files)} binary trace files in {LOG_DIR}")
 
-    files = [Path("/mnt/truenas/ibs_log/ibs_\\x08\\x3c\\x0d\\x6b\\x00\\x00\\x00.bin")] 
     for bin_path in files:
+        if "snap" in bin_path.name:
+            continue
         print(f"Converting {bin_path.name} -> {bin_path.with_suffix('.csv')}")
         try:
             convert_file(bin_path)

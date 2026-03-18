@@ -2383,8 +2383,6 @@ redo:
 	}
 
 	if(filter_instruction()) {
-		pr_info("[Fuzzer] Skipping instruction due to filter\n");
-		dump_instruction();
 		goto redo;
 	}
 
@@ -2473,7 +2471,6 @@ static void fetch_microop(int exit_code, struct kvm_vcpu *vcpu)
 	
 	if (fuzz_state->current_op == INSTRUCTION) {
 		fuzz_state->current_op = MICROOP;
-		fuzz_state->file_open = true;
 		ibs_log_hpa(fuzz_state->hpa_mapping, GUEST_PHYS_PAGE_SIZE, fuzz_state->inj.i.bytes, fuzz_state->inj.i.len);
 	}
 
@@ -2483,17 +2480,23 @@ static void fetch_microop(int exit_code, struct kvm_vcpu *vcpu)
 		write_instr(vcpu, REGISTER_VALUE, 0);
 		reset_state(vcpu);
 	}
+
 	else if(fuzz_state->current_op == MICROOP && fuzz_state->fetch_counter <= MAX_INSTRUCTION_COUNT && fuzz_state->per_instruction_counter < PER_INSTRUCTION_COUNTER)
 	{
 		write_instr(vcpu, REGISTER_VALUE, fuzz_state->per_instruction_counter * 1024); //increase offset to see if it affects micro-op 
 		reset_state(vcpu);
-		fuzz_state->per_instruction_counter++;
+		//a very dirty way to synchronize with user-space
+		if(get_ack_event())
+		{
+			fuzz_state->per_instruction_counter++;
+			fuzz_state->file_open = true;
+		}
+		
 	}
 	
 	else if(fuzz_state->current_op == MICROOP) {
 
-		fuzz_state->file_open = false;
-
+		set_ack_event(0);
 		write_result(exit_code);
 		if(!move_next_instruction())
 		{
@@ -2501,7 +2504,6 @@ static void fetch_microop(int exit_code, struct kvm_vcpu *vcpu)
 			ibs_log_finish();
 			return;
 		}
-		
 		fuzz_state->current_op = INSTRUCTION;
 		fuzz_state->fetch_counter = 0;
 		fuzz_state->per_instruction_counter = 0;
@@ -4875,6 +4877,8 @@ static void __maybe_unused read_ibs_ctrl(u64 uop_cnt, struct kvm_vcpu *vcpu)
 		fuzz_state->saved_regs.rax, fuzz_state->saved_regs.rbx, fuzz_state->saved_regs.rcx, fuzz_state->saved_regs.rdx, fuzz_state->saved_regs.rsi, fuzz_state->saved_regs.rdi,
 		fuzz_state->saved_regs.r8, fuzz_state->saved_regs.r9, fuzz_state->saved_regs.r10, fuzz_state->saved_regs.r11, fuzz_state->saved_regs.r12, fuzz_state->saved_regs.r13, fuzz_state->saved_regs.r14, fuzz_state->saved_regs.r15,
 		fuzz_state->saved_regs.rflags, fuzz_state->saved_regs.rsp, fuzz_state->saved_regs.rbp, branch_target_rip, fuzz_state->inj.i.bytes, fuzz_state->inj.i.len);
+
+		fuzz_state->file_open = false;
 	}
 
 	ibs_op_ctl_data.val = 0;
@@ -4934,13 +4938,13 @@ static noinstr void svm_vcpu_enter_exit(struct kvm_vcpu *vcpu,
 			__svm_sev_es_vcpu_run(svm, spec_ctrl_intercepted,
 			sev_es_host_save_area(sd));
 	} else {
-		if (fuzz_state->current_op == MICROOP && fuzz_state->file_open) {
+		if (fuzz_state->current_op == MICROOP) {
 			write_ibs_ctrl(fuzz_state->fetch_counter);
 		}
 
 		__svm_vcpu_run(svm, spec_ctrl_intercepted);
 
-		if (fuzz_state->current_op == MICROOP && fuzz_state->file_open && fuzz_state->fetch_counter <= MAX_INSTRUCTION_COUNT) {
+		if (fuzz_state->current_op == MICROOP && fuzz_state->fetch_counter <= MAX_INSTRUCTION_COUNT) {
 			read_ibs_ctrl(fuzz_state->fetch_counter, vcpu);
 		}
 	}
@@ -6219,6 +6223,7 @@ static void __svm_exit(void)
 #define FUZZ_IOC_RESET_STATE _IO('a', 'i')
 #define FUZZ_IOC_SET_GLOBAL_FUZZ_STATE _IOW('a', 'j', fuzzer_state_snapshot_t)
 #define FUZZ_IOC_GET_GLOBAL_FUZZ_STATE _IOR('a', 'k', fuzzer_state_snapshot_t)
+#define FUZZ_IOC_ACK_SET _IOW('a', 'l', uint64_t)
 
 
 static long fuzz_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
@@ -6286,6 +6291,13 @@ static long fuzz_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		spin_lock_irqsave(&setup_lock, flags);
 		global_fuzz_state.total_range.started = false;
 		spin_unlock_irqrestore(&setup_lock, flags);
+		return 0;
+
+	case FUZZ_IOC_ACK_SET:
+		uint64_t ack_value;
+		if (copy_from_user(&ack_value, (void __user *)arg, sizeof(ack_value)))
+			return -EFAULT;
+		set_ack_event(ack_value);
 		return 0;
     default:
         return -EINVAL;

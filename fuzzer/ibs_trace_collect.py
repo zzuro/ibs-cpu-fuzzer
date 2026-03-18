@@ -14,12 +14,12 @@ from pathlib import Path
 import ctypes
 import shlex
 import errno
-import threading
 import traceback
+import multiprocessing as mp
 
 
-SSD_DIR = Path("/mnt/truenas/")
-LOG_DIR = Path("/mnt/truenas/ibs_log")
+SSD_DIR = Path("/mnt/ssd/")
+LOG_DIR = Path("/mnt/ssd/ibs_log")
 IBS_PREFIX = str(LOG_DIR / "ibs_")
 IBS_SUFFIX = ".bin"
 
@@ -40,20 +40,37 @@ FUZZ_IOC_MOVE_NEXT_INSTR = _IO(ord('a'), ord('g'))
 FUZZ_IOC_RESET_STATE = _IO(ord('a'), ord('i'))
 FUZZ_IOC_SET_GLOBAL_FUZZ_STATE = _IOW(ord('a'), ord('j'), FuzzerStateSnapshot)
 FUZZ_IOC_GET_GLOBAL_FUZZ_STATE = _IOR(ord('a'), ord('k'), FuzzerStateSnapshot)
+FUZZ_IOC_ACK_SET = _IOW(ord('a'), ord('l'), ctypes.c_uint64)
 
-stop_event = threading.Event()
-print_lock = threading.Lock()
+stop_event = None
+print_lock = None
 
 
 # ----------------------------
-# Thread-safe printing
+# Process-global initialization
+# ----------------------------
+
+def init_process_globals(shared_stop_event, shared_print_lock):
+    global stop_event, print_lock
+    stop_event = shared_stop_event
+    print_lock = shared_print_lock
+
+
+# ----------------------------
+# Process-safe printing
 # ----------------------------
 
 def ts_print(*args, **kwargs):
+    if print_lock is None:
+        print(*args, **kwargs)
+        return
     with print_lock:
         print(*args, **kwargs)
 
 def ts_print_exc():
+    if print_lock is None:
+        traceback.print_exc(file=sys.stderr)
+        return
     with print_lock:
         traceback.print_exc(file=sys.stderr)
 
@@ -78,7 +95,10 @@ def count_log_files() -> int:
     files = [f for f in LOG_DIR.iterdir() if f.is_file()]
     total = len(files)
     avg_size = sum(f.stat().st_size for f in files) / total if total > 0 else 0
-    ts_print(f"Log directory contains {total} files, average size: {avg_size:.2f} bytes", file=sys.stderr)
+    ts_print(
+        f"Log directory contains {total} files, average size: {avg_size:.2f} bytes",
+        file=sys.stderr,
+    )
     return total
 
 def create_log_directory_if_missing():
@@ -98,7 +118,7 @@ def read_exact_or_none(f, n: int) -> bytes | None:
     total = 0
 
     while total < n:
-        if stop_event.is_set():
+        if stop_event is not None and stop_event.is_set():
             return None
 
         try:
@@ -115,7 +135,6 @@ def read_exact_or_none(f, n: int) -> bytes | None:
         total += len(chunk)
 
     return b"".join(chunks)
-
 
 
 # ----------------------------
@@ -156,7 +175,7 @@ def ioctl_move_next_instr(fd: int) -> None:
     if rc < 0:
         e = ctypes.get_errno()
         raise OSError(e, f"ioctl(MOVE_NEXT_INSTR) failed: {os.strerror(e)}")
-    
+
 def ioctl_reset_state(fd: int) -> None:
     rc = _ioctl(fd, FUZZ_IOC_RESET_STATE, None)
     if rc < 0:
@@ -176,6 +195,12 @@ def ioctl_get_global_fuzz_state(fd: int) -> FuzzerStateSnapshot:
         e = ctypes.get_errno()
         raise OSError(e, f"ioctl(GET_GLOBAL_FUZZ_STATE) failed: {os.strerror(e)}")
     return snapshot
+
+def ioctl_ack_set(fd: int, value: int) -> None:
+    rc = _ioctl(fd, FUZZ_IOC_ACK_SET, ctypes.byref(ctypes.c_uint64(value)))
+    if rc < 0:
+        e = ctypes.get_errno()
+        raise OSError(e, f"ioctl(ACK_SET) failed: {os.strerror(e)}")
 
 def default_reset_state() -> FuzzerState:
     st = FuzzerState()
@@ -300,8 +325,9 @@ def parse_qemu_script(script_path: Path) -> list[str]:
     return shlex.split(command_str)
 
 def start_qemu(cmd: list[str], core_id: int) -> subprocess.Popen:
+    pinned_cmd = ["taskset", "-c", str(core_id)] + cmd
     return subprocess.Popen(
-        cmd,
+        pinned_cmd,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -334,7 +360,11 @@ def kill_qemu(proc: subprocess.Popen, sig=signal.SIGTERM, grace_sec: float = 2.0
 # Main per-core trace loop
 # ----------------------------
 
-def log_timeout_instruction(crash_log_path: Path, insn_bytes: bytes, note: str = "trace inactivity timeout") -> None:
+def log_timeout_instruction(
+    crash_log_path: Path,
+    insn_bytes: bytes,
+    note: str = "trace inactivity timeout",
+) -> None:
     crash_log_path.parent.mkdir(parents=True, exist_ok=True)
     ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
     insn_hex = insn_bytes.hex() if insn_bytes else "UNKNOWN"
@@ -348,7 +378,7 @@ def trace_loop_with_timeout(
     inactivity_timeout: float,
     on_timeout_state_path: Path,
     resume: bool,
-    qemu_script: Path
+    qemu_script: Path,
 ) -> int:
     trace_path = f"{TRACE_BASE}{core_id}/trace{core_id}"
     crash_log = LOG_DIR / f"timeouts_core{core_id}.log"
@@ -361,7 +391,10 @@ def trace_loop_with_timeout(
 
     last_received = time.monotonic()
     last_snapshot_time = time.monotonic()
-    ts_print(f"[core {core_id}] Starting trace loop on {trace_path} (timeout={inactivity_timeout}s)", file=sys.stderr)
+    ts_print(
+        f"[core {core_id}] Starting trace loop on {trace_path} (timeout={inactivity_timeout}s)",
+        file=sys.stderr,
+    )
 
     current_insn_bytes = None
     out = None
@@ -374,37 +407,66 @@ def trace_loop_with_timeout(
                 try:
                     st = ioctl_get_state(device_fd)
                     dump_state_to_file(st, on_timeout_state_path)
-                    ts_print(f"[core {core_id}] Saved fuzz_state to {on_timeout_state_path}", file=sys.stderr)
+                    ts_print(
+                        f"[core {core_id}] Saved fuzz_state to {on_timeout_state_path}",
+                        file=sys.stderr,
+                    )
                 except Exception as e:
                     st = None
-                    ts_print(f"[core {core_id}] ERROR: failed to GET/DUMP state on timeout: {e}", file=sys.stderr)
+                    ts_print(
+                        f"[core {core_id}] ERROR: failed to GET/DUMP state on timeout: {e}",
+                        file=sys.stderr,
+                    )
 
-                ts_print(f"[core {core_id}] TIMEOUT: no activity for {inactivity_timeout}s", file=sys.stderr)
+                ts_print(
+                    f"[core {core_id}] TIMEOUT: no activity for {inactivity_timeout}s",
+                    file=sys.stderr,
+                )
 
                 try:
                     if st is not None:
-                        log_timeout_instruction(crash_log, bytes(st.inj.i.bytes[:st.inj.i.len]))
+                        log_timeout_instruction(
+                            crash_log,
+                            bytes(st.inj.i.bytes[:st.inj.i.len]),
+                        )
                     else:
-                        log_timeout_instruction(crash_log, b"", note="timeout (state unavailable)")
+                        log_timeout_instruction(
+                            crash_log,
+                            b"",
+                            note="timeout (state unavailable)",
+                        )
                 except Exception as e:
-                    ts_print(f"[core {core_id}] WARN: failed to log timeout instruction: {e}", file=sys.stderr)
+                    ts_print(
+                        f"[core {core_id}] WARN: failed to log timeout instruction: {e}",
+                        file=sys.stderr,
+                    )
 
                 if qemu_proc is not None:
                     ts_print(f"[core {core_id}] Stopping QEMU ...", file=sys.stderr)
                     kill_qemu(qemu_proc)
 
                 try:
+                    ioctl_ack_set(device_fd, 1)
                     ioctl_move_next_instr(device_fd)
                 except Exception as e:
-                    ts_print(f"[core {core_id}] ERROR: failed to rotate instruction/log after timeout: {e}", file=sys.stderr)
+                    ts_print(
+                        f"[core {core_id}] ERROR: failed to rotate instruction/log after timeout: {e}",
+                        file=sys.stderr,
+                    )
                     relay_fd.close()
                     return 2
 
                 try:
                     qemu_proc = start_qemu(parse_qemu_script(qemu_script), core_id)
-                    ts_print(f"[core {core_id}] Restarted QEMU (pid={qemu_proc.pid})", file=sys.stderr)
+                    ts_print(
+                        f"[core {core_id}] Restarted QEMU pinned to core {core_id} (pid={qemu_proc.pid})",
+                        file=sys.stderr,
+                    )
                 except Exception as e:
-                    ts_print(f"[core {core_id}] ERROR: failed to restart QEMU: {e}", file=sys.stderr)
+                    ts_print(
+                        f"[core {core_id}] ERROR: failed to restart QEMU: {e}",
+                        file=sys.stderr,
+                    )
                     relay_fd.close()
                     return 2
 
@@ -421,7 +483,10 @@ def trace_loop_with_timeout(
                     st = ioctl_get_state(device_fd)
                     dump_state_to_file(st, on_timeout_state_path)
                 except Exception as e:
-                    ts_print(f"[core {core_id}] WARN: failed to save periodic snapshot: {e}", file=sys.stderr)
+                    ts_print(
+                        f"[core {core_id}] WARN: failed to save periodic snapshot: {e}",
+                        file=sys.stderr,
+                    )
                 last_snapshot_time = now
 
             header_blob = read_exact_or_none(relay_fd, HEADER_SIZE)
@@ -436,14 +501,24 @@ def trace_loop_with_timeout(
                     dump_state_to_file(st, on_timeout_state_path)
                 except Exception:
                     pass
-                ts_print(f"[core {core_id}] WARN: malformed record with len={hdr.record_len}, skipping", file=sys.stderr)
+                ts_print(
+                    f"[core {core_id}] WARN: malformed record with len={hdr.record_len}, skipping",
+                    file=sys.stderr,
+                )
                 continue
 
             if hdr.record_type == IBS_REC_FINISH or not check_disk_space():
+                ioctl_ack_set(device_fd, 1)
                 if not check_disk_space():
-                    ts_print(f"[core {core_id}] ERROR: disk space low, stopping.", file=sys.stderr)
+                    ts_print(
+                        f"[core {core_id}] ERROR: disk space low, stopping.",
+                        file=sys.stderr,
+                    )
                 else:
-                    ts_print(f"[core {core_id}] Received FINISH record, stopping.", file=sys.stderr)
+                    ts_print(
+                        f"[core {core_id}] Received FINISH record, stopping.",
+                        file=sys.stderr,
+                    )
 
                 if out is not None:
                     out.close()
@@ -455,6 +530,7 @@ def trace_loop_with_timeout(
 
             insn_bytes = bytes(hdr.instruction[:hdr.instruction_len])
             if current_insn_bytes != insn_bytes:
+                ioctl_ack_set(device_fd, 1)
                 current_insn_bytes = insn_bytes
                 current_path = generate_filename(current_insn_bytes)
                 if out is not None:
@@ -463,6 +539,7 @@ def trace_loop_with_timeout(
 
             remaining = hdr.record_len - HEADER_SIZE
             body_blob = read_exact_or_none(relay_fd, remaining)
+            
             if body_blob is None:
                 time.sleep(POLL_SLEEP_SEC)
                 continue
@@ -472,21 +549,24 @@ def trace_loop_with_timeout(
 
             if hdr.record_type == IBS_REC_HPA:
                 if hdr.record_len != HPA_SIZE:
-                    ts_print(f"[core {core_id}] WARN: malformed HPA record with len={hdr.record_len}, skipping", file=sys.stderr)
+                    ts_print(
+                        f"[core {core_id}] WARN: malformed HPA record with len={hdr.record_len}, skipping",
+                        file=sys.stderr,
+                    )
                     continue
-
             elif hdr.record_type == IBS_REC_EVENT:
                 if hdr.record_len != EVENT_SIZE:
                     raise ValueError(
                         f"[core {core_id}] EVENT record size mismatch: got {hdr.record_len}, expected {EVENT_SIZE}"
                     )
-
             else:
-                ts_print(f"[core {core_id}] WARN: unknown record type {hdr.record_type}, skipping", file=sys.stderr)
+                ts_print(
+                    f"[core {core_id}] WARN: unknown record type {hdr.record_type}, skipping",
+                    file=sys.stderr,
+                )
                 continue
 
             out.write(full_blob)
-
     except KeyboardInterrupt:
         stop_event.set()
     finally:
@@ -509,15 +589,19 @@ def trace_loop_with_timeout(
 # Worker
 # ----------------------------
 
-def core_worker(core_id: int, args) -> None:
-    dev_fd = open_device()
-    qemu_proc = None
-
+def core_worker(core_id: int, args, shared_stop_event, shared_print_lock) -> None:
+    init_process_globals(shared_stop_event, shared_print_lock)
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
     os.sched_setaffinity(0, {core_id})
+
+    dev_fd = None
+    qemu_proc = None
     state_path = Path(str(args.state_file).replace(".bin", f".core{core_id}.snapshot.bin"))
     qemu_script = Path(args.qemu_script)
 
     try:
+        dev_fd = open_device()
+
         if args.resume:
             st = load_state_from_file(state_path)
             ioctl_set_state(dev_fd, st)
@@ -529,7 +613,10 @@ def core_worker(core_id: int, args) -> None:
             ts_print(f"[core {core_id}] Fuzzer state reset successfully.", file=sys.stderr)
 
         qemu_proc = start_qemu(parse_qemu_script(qemu_script), core_id)
-        ts_print(f"[core {core_id}] Started QEMU via {qemu_script} (pid={qemu_proc.pid})", file=sys.stderr)
+        ts_print(
+            f"[core {core_id}] Started QEMU pinned to core {core_id} via {qemu_script} (pid={qemu_proc.pid})",
+            file=sys.stderr,
+        )
 
         trace_loop_with_timeout(
             core_id=core_id,
@@ -538,7 +625,7 @@ def core_worker(core_id: int, args) -> None:
             inactivity_timeout=args.timeout,
             on_timeout_state_path=state_path,
             resume=args.resume,
-            qemu_script=qemu_script
+            qemu_script=qemu_script,
         )
 
     except Exception as e:
@@ -570,30 +657,40 @@ def get_available_cores() -> list[int]:
         n = os.cpu_count() or 1
         return list(range(n))
 
-def signal_handler(sig, frame):
-    ts_print("\nReceived Ctrl+C, stopping all workers...", file=sys.stderr)
-    stop_event.set()
-
 def main() -> int:
+    global stop_event, print_lock
+
     ap = argparse.ArgumentParser()
     ap.add_argument("--qemu-script", default="./../vms/qemu.sh", help="Path to qemu start script")
     ap.add_argument("--timeout", type=float, default=10.0, help="Inactivity timeout (seconds); 0 disables")
-    ap.add_argument("--state-file", default="/mnt/truenas/ibs_log/fuzz_state.bin",
-                    help="Base path used to dump fuzz_state on timeout; per-core suffix is added")
-    ap.add_argument("--resume", action="store_true",
-                    help="Resume from per-core state files instead of resetting to defaults")
+    ap.add_argument(
+        "--state-file",
+        default="/mnt/ssd/ibs_log/fuzz_state.bin",
+        help="Base path used to dump fuzz_state on timeout; per-core suffix is added",
+    )
+    ap.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume from per-core state files instead of resetting to defaults",
+    )
     ap.add_argument(
         "--save-state",
         nargs="?",
-        const="/mnt/truenas/ibs_log/fuzz_state.bin",
+        const="/mnt/ssd/ibs_log/fuzz_state.bin",
         default=None,
-        help="Save fuzz state for all selected cores and exit"
+        help="Save fuzz state for all selected cores and exit",
     )
     ap.add_argument("--count-only", action="store_true", help="Only count records and exit")
-    ap.add_argument("--cores", default=None,
-                    help="Comma-separated core list, e.g. 0,1,2,3. Default: all available cores")
+    ap.add_argument(
+        "--cores",
+        default=None,
+        help="Comma-separated core list, e.g. 0,1,2,3. Default: all available cores",
+    )
 
     args = ap.parse_args()
+
+    stop_event = mp.Event()
+    print_lock = mp.Lock()
 
     if args.count_only:
         count_log_files()
@@ -613,9 +710,7 @@ def main() -> int:
         for core_id in cores:
             dev_fd = None
             try:
-                os.sched_setaffinity(0, {core_id})
                 dev_fd = open_device()
-
                 core_state_path = Path(str(base_path).replace(".bin", f".core{core_id}.bin"))
                 save_state(dev_fd, core_state_path)
                 ts_print(f"[core {core_id}] Saved fuzz_state to {core_state_path}", file=sys.stderr)
@@ -635,66 +730,150 @@ def main() -> int:
 
     try:
         subprocess.run(
-            ["sudo", "killall", "qemu-system-x86_64"],
+            ["killall", "qemu-system-x86_64"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            check=False
+            check=False,
         )
     except Exception as e:
         ts_print(f"Warning: failed to kill existing qemu instances: {e}", file=sys.stderr)
 
-    device_fd = open_device()
-    if not args.resume:
+    device_fd = None
+    procs = []
+    had_error = False
+
+    try:
+        device_fd = open_device()
+
+        if not args.resume:
+            try:
+                reset_log_directory()
+                ioctl_reset_state(device_fd)
+            except Exception as e:
+                ts_print(f"Failed to reset log directory: {e}", file=sys.stderr)
+                return 1
+        else:
+            create_log_directory_if_missing()
+            if Path(args.state_file).exists():
+                snapshot = load_global_state_from_file(Path(args.state_file))
+                ioctl_set_global_fuzz_state(device_fd, snapshot)
+
         try:
-            reset_log_directory()
-            ioctl_reset_state(device_fd)
-        except Exception as e:
-            ts_print(f"Failed to reset log directory: {e}", file=sys.stderr)
-            return 1
-    else:
-        create_log_directory_if_missing()
-        if Path(args.state_file).exists():
-            snapshot = load_global_state_from_file(Path(args.state_file))
-            ioctl_set_global_fuzz_state(device_fd, snapshot)
+            ioctl_close_log(device_fd)
+        except Exception:
+            pass
 
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
+        ioctl_open_log(device_fd)
 
-    try:
-        ioctl_close_log(device_fd)
-    except Exception:
-        pass
+        for core_id in cores:
+            p = mp.Process(
+                target=core_worker,
+                args=(core_id, args, stop_event, print_lock),
+                name=f"core-{core_id}",
+                daemon=False,
+            )
+            p.start()
+            procs.append(p)
 
-    ioctl_open_log(device_fd)
-
-    threads = []
-    for core_id in cores:
-        t = threading.Thread(target=core_worker, args=(core_id, args), name=f"core-{core_id}", daemon=True)
-        t.start()
-        threads.append(t)
-
-    try:
         last_snapshot_time = time.monotonic()
-        while any(t.is_alive() for t in threads):
-            for t in threads:
-                t.join(timeout=0.2)
-            if time.monotonic() - last_snapshot_time >= SNAPSHOT_TIMEOUT:
+
+        try:
+            while any(p.is_alive() for p in procs):
+                for p in procs:
+                    p.join(timeout=0.2)
+
+                if time.monotonic() - last_snapshot_time >= SNAPSHOT_TIMEOUT:
+                    try:
+                        snapshot = ioctl_get_global_fuzz_state(device_fd)
+                        dump_global_state_to_file(snapshot, Path(args.state_file))
+                    except Exception as e:
+                        ts_print(f"Failed to save global fuzz state snapshot: {e}", file=sys.stderr)
+                    last_snapshot_time = time.monotonic()
+
+                if stop_event.is_set():
+                    break
+
+        except KeyboardInterrupt:
+            ts_print("Parent received Ctrl+C, stopping workers...", file=sys.stderr)
+            stop_event.set()
+
+        if stop_event.is_set():
+            ts_print("Stopping worker processes...", file=sys.stderr)
+
+            for p in procs:
+                if p.is_alive():
+                    p.join(timeout=1.0)
+
+            for p in procs:
+                if p.is_alive():
+                    ts_print(f"Terminating worker process {p.name} (pid={p.pid})", file=sys.stderr)
+                    try:
+                        p.terminate()
+                    except Exception:
+                        pass
+
+            for p in procs:
+                if p.is_alive():
+                    p.join(timeout=1.0)
+
+            for p in procs:
+                if p.is_alive():
+                    ts_print(f"Killing worker process {p.name} (pid={p.pid})", file=sys.stderr)
+                    try:
+                        os.kill(p.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    except Exception:
+                        pass
+
+            for p in procs:
                 try:
-                    snapshot = ioctl_get_global_fuzz_state(device_fd)
-                    dump_global_state_to_file(snapshot, Path(args.state_file))
-                except Exception as e:
-                    ts_print(f"Failed to save global fuzz state snapshot: {e}", file=sys.stderr)
-                last_snapshot_time = time.monotonic()
-            if stop_event.is_set():
-                break
-    except KeyboardInterrupt:
-        stop_event.set()
+                    p.join(timeout=1.0)
+                except Exception:
+                    pass
 
-    for t in threads:
-        t.join()
+        for p in procs:
+            if p.is_alive():
+                had_error = True
+                ts_print(f"Worker {p.name} is still alive after shutdown", file=sys.stderr)
+            elif p.exitcode not in (0, None, -signal.SIGTERM, -signal.SIGKILL):
+                had_error = True
+                ts_print(f"Worker {p.name} exited with code {p.exitcode}", file=sys.stderr)
 
-    os.close(device_fd)
-    return 0
+        return 1 if had_error else 0
+
+    finally:
+        if stop_event is not None:
+            stop_event.set()
+
+        for p in procs:
+            if p.is_alive():
+                try:
+                    p.terminate()
+                except Exception:
+                    pass
+
+        for p in procs:
+            try:
+                p.join(timeout=0.5)
+            except Exception:
+                pass
+
+        try:
+            subprocess.run(
+                ["killall", "-KILL", "qemu-system-x86_64"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+        except Exception:
+            pass
+
+        if device_fd is not None:
+            try:
+                os.close(device_fd)
+            except Exception:
+                pass
 
 if __name__ == "__main__":
     if not check_ssd_mounted():

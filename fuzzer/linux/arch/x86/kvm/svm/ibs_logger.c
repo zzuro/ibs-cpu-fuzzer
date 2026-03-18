@@ -15,6 +15,8 @@ static struct rchan *ibs_chan[IBS_MAX_CPUS];
 static struct dentry *ibs_dbg_dir[IBS_MAX_CPUS];
 static struct dentry *ibs_root_dir;
 
+static atomic64_t ack_counter[IBS_MAX_CPUS];
+
 static __always_inline uint64_t __read_msr(uint32_t msr_register)
 {
 	uint64_t msr_value;
@@ -62,6 +64,23 @@ static struct rchan_callbacks ibs_relay_callbacks = {
 	.create_buf_file = ibs_create_buf_file,
 	.remove_buf_file = ibs_remove_buf_file,
 };
+
+void set_ack_event(uint64_t value)
+{
+	int cpu = ibs_this_cpu();
+	if (cpu < 0)
+		return;
+	atomic64_set(&ack_counter[cpu], value);
+}
+
+uint64_t get_ack_event(void)
+{
+	int cpu = ibs_this_cpu();
+	if (cpu < 0)
+		return -1;
+
+	return atomic64_read(&ack_counter[cpu]);
+}
 
 static __always_inline void ibs_relay_write_cpu(int cpu, const void *data, size_t len)
 {
@@ -114,6 +133,8 @@ int ibs_log_open(void)
 			pr_err("ibs: relay_open failed for cpu %d\n", cpu);
 			goto err;
 		}
+
+		atomic64_set(&ack_counter[cpu], 0);
 	}
 
 	pr_info("ibs: relay binary logging enabled at /sys/kernel/debug/%s/cpu*/\n",

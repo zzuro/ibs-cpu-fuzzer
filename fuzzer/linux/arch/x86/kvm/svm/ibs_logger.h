@@ -10,8 +10,8 @@
 
 #define IBS_RELAY_DIR       "ibs_logger"
 #define IBS_RELAY_BASENAME  "trace"
-#define IBS_SUBBUF_SIZE (1024 * 1024)
-#define IBS_N_SUBBUFS   8
+#define IBS_SUBBUF_SIZE (1024 * 1024 * 4)
+#define IBS_N_SUBBUFS   4
 
 
 /*
@@ -113,3 +113,6 @@ void ibs_log_event(uint64_t rip_value, uint64_t uop_cnt,
 		   uint64_t branch_target_rip, uint8_t *raw_instr, size_t raw_instr_len);
 
 
+
+void set_ack_event(uint64_t value);
+uint64_t get_ack_event(void);
