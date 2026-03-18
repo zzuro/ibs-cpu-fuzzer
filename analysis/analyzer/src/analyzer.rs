@@ -8,7 +8,7 @@ use std::ptr;
 
 use crate::writer::{Finding, ResultEntry};
 
-const PAGE_SIZE: u64 = 4096;
+const PAGE_SIZE: u64 = 0x100000000; 
 
 const IBS_REC_HPA: u32 = 2;
 const IBS_REC_EVENT: u32 = 3;
@@ -324,6 +324,16 @@ pub fn analyze_bin(path: &Path) -> Result<Option<Finding>> {
 
     let page_series = Series::new(PlSmallStr::from("target_pages"), target_pages);
 
+    let reg_similarity_threshold = 0x1000_u64;
+
+    let regs = &[
+        "rax", "rbx", "rcx", "rdx", "rsi", "rdi", "r8", "r9", "r10", "r11", "r12", "r13",
+        "r14", "r15", "rsp", "rbp",
+    ];
+
+    let is_branch = col("op_type").eq(lit(IBS_OP_BRANCH));
+
+    // Base per-row frame, with row-level flags only.
     let lf = lf
         .filter(
             col("phys_addr")
@@ -331,46 +341,46 @@ pub fn analyze_bin(path: &Path) -> Result<Option<Finding>> {
                 .is_in(lit(page_series).implode(), false)
                 .not(),
         )
-        .with_row_index("row_nr", None);
-
-    let reg_similarity_threshold = 0x1000_u64;
-
-    let regs = &[
-        "rax", "rbx", "rcx", "rdx", "rsi", "rdi", "r8", "r9", "r10", "r11", "r12",
-        "r13", "r14", "r15", "rsp", "rbp",
-    ];
-
-    let lf = lf.with_columns([
-        similar_to_any_reg_expr("phys_addr", regs, reg_similarity_threshold)
-            .alias("flag_phys_similar_reg"),
-        similar_to_any_reg_expr("branch_target_rip", regs, reg_similarity_threshold)
-            .alias("flag_branch_target_similar_reg"),
-        repeated_pattern_expr("phys_addr").alias("flag_phys_pattern"),
-        repeated_pattern_expr("branch_target_rip").alias("flag_branch_pattern"),
-        col("dc_uc_mem_acc").eq(lit(1u8)).alias("flag_dc_uc_mem_acc"),
-    ]);
-
-    let threshold = 8 * 1024u64;
-    let reg_change_expr = regs
-        .iter()
-        .map(|r| (col(*r).max() - col(*r).min()).gt(lit(threshold)))
-        .reduce(|a, b| a.or(b))
-        .unwrap()
-        .alias("flag_any_reg_changes");
-
-    let lin_phys_conflicts = lf
-        .clone()
-        .filter(col("lin_addr").neq(lit(0u64)))
-        .group_by([col("uop_cnt"), col("lin_addr")])
-        .agg([
-            col("phys_addr").n_unique().alias("group_n_unique"),
+        .filter(col("lin_addr").eq(lit(0u64)))
+        .with_row_index("row_nr", None)
+        .with_columns([
+            similar_to_any_reg_expr("phys_addr", regs, reg_similarity_threshold)
+                .alias("flag_phys_similar_reg"),
+            when(is_branch.clone())
+                .then(similar_to_any_reg_expr(
+                    "branch_target_rip",
+                    regs,
+                    reg_similarity_threshold,
+                ))
+                .otherwise(lit(false))
+                .alias("flag_branch_target_similar_reg"),
+            repeated_pattern_expr("phys_addr").alias("flag_phys_pattern"),
+            when(is_branch)
+                .then(repeated_pattern_expr("branch_target_rip"))
+                .otherwise(lit(false))
+                .alias("flag_branch_pattern"),
+            col("dc_uc_mem_acc").eq(lit(1u8)).alias("flag_dc_uc_mem_acc"),
         ])
-        .filter(col("group_n_unique").gt(lit(1)))
-        .group_by([col("uop_cnt")])
-        .agg([
-            lit(true).alias("flag_same_lin_diff_phys"),
+        .with_columns([
+            col("flag_phys_similar_reg")
+                .or(col("flag_branch_target_similar_reg"))
+                .or(col("flag_phys_pattern"))
+                .or(col("flag_branch_pattern"))
+                .or(col("flag_dc_uc_mem_acc"))
+                .alias("interesting_row"),
         ]);
 
+    // Sample-level flag: same lin_addr -> different phys_addr.
+    let lin_phys_conflicts = lf
+        .clone()
+        .filter(col("lin_addr").eq(lit(0u64)))
+        .group_by([col("uop_cnt"), col("lin_addr")])
+        .agg([col("phys_addr").n_unique().alias("group_n_unique")])
+        .filter(col("group_n_unique").gt(lit(1)))
+        .group_by([col("uop_cnt")])
+        .agg([lit(true).alias("flag_same_lin_diff_phys")]);
+
+    // Sequence-derived sample-level flags.
     let seq = lf
         .clone()
         .sort(["uop_cnt", "row_nr"], SortMultipleOptions::default())
@@ -405,33 +415,16 @@ pub fn analyze_bin(path: &Path) -> Result<Option<Finding>> {
             .alias("flag_load_followed_by_mispred_branch"),
     ]);
 
+    // Sample-level flags only. Rename them so they never collide with row-level columns.
     let sample_flags = lf
         .clone()
         .group_by([col("uop_cnt")])
         .agg([
-            col("flag_phys_similar_reg")
-                .any(false)
-                .alias("flag_phys_similar_reg"),
-            col("flag_branch_target_similar_reg")
-                .any(false)
-                .alias("flag_branch_target_similar_reg"),
-            col("flag_phys_pattern").any(false).alias("flag_phys_pattern"),
-            col("flag_branch_pattern")
-                .any(false)
-                .alias("flag_branch_pattern"),
-            col("flag_dc_uc_mem_acc")
-                .any(false)
-                .alias("flag_dc_uc_mem_acc"),
-            col("branch_target_rip")
-                .n_unique()
-                .gt(lit(3))
-                .alias("flag_branch_target_changes"),
             col("phys_addr")
                 .floor_div(lit(1u64 << 48))
                 .n_unique()
                 .gt(lit(3))
-                .alias("flag_phys_msb_changes"),
-            reg_change_expr,
+                .alias("sample_flag_phys_msb_changes"),
         ])
         .join(
             lin_phys_conflicts,
@@ -446,45 +439,48 @@ pub fn analyze_bin(path: &Path) -> Result<Option<Finding>> {
             JoinArgs::new(JoinType::Left),
         )
         .with_columns([
-            col("flag_phys_similar_reg")
-                .or(col("flag_branch_target_similar_reg"))
-                .or(col("flag_phys_pattern"))
-                .or(col("flag_branch_pattern"))
-                .or(col("flag_dc_uc_mem_acc"))
-                .or(col("flag_branch_target_changes"))
-                .or(col("flag_phys_msb_changes"))
-                .or(col("flag_any_reg_changes"))
-                .or(col("flag_same_lin_diff_phys"))
-                .or(col("flag_load_followed_by_branch"))
-                .or(col("flag_load_followed_by_mispred_branch"))
-                .alias("interesting_sample"),
-        ]);
-
-    let debug_flags = sample_flags
-        .clone()
-        .filter(col("interesting_sample"))
+            col("flag_same_lin_diff_phys")
+                .fill_null(lit(false))
+                .alias("sample_flag_same_lin_diff_phys"),
+            col("flag_load_followed_by_branch")
+                .fill_null(lit(false))
+                .alias("sample_flag_load_followed_by_branch"),
+            col("flag_load_followed_by_mispred_branch")
+                .fill_null(lit(false))
+                .alias("sample_flag_load_followed_by_mispred_branch"),
+        ])
         .select([
             col("uop_cnt"),
-            col("flag_phys_similar_reg"),
-            col("flag_branch_target_similar_reg"),
-            col("flag_phys_pattern"),
-            col("flag_branch_pattern"),
-            col("flag_dc_uc_mem_acc"),
-            col("flag_branch_target_changes"),
-            col("flag_phys_msb_changes"),
-            col("flag_any_reg_changes"),
-            col("flag_same_lin_diff_phys"),
-            col("flag_load_followed_by_branch"),
-            col("flag_load_followed_by_mispred_branch"),
+            col("sample_flag_phys_msb_changes"),
+            col("sample_flag_same_lin_diff_phys"),
+            col("sample_flag_load_followed_by_branch"),
+            col("sample_flag_load_followed_by_mispred_branch"),
         ]);
 
+    // Join sample-level flags back onto rows, then keep only rows that are actually flagged:
+    // either by row-level flags or by sample-level flags.
     let interesting_rows = lf
         .join(
-            debug_flags,
+            sample_flags,
             [col("uop_cnt")],
             [col("uop_cnt")],
-            JoinArgs::new(JoinType::Inner),
+            JoinArgs::new(JoinType::Left),
         )
+        .with_columns([
+            col("sample_flag_phys_msb_changes").fill_null(lit(false)),
+            col("sample_flag_same_lin_diff_phys").fill_null(lit(false)),
+            col("sample_flag_load_followed_by_branch").fill_null(lit(false)),
+            col("sample_flag_load_followed_by_mispred_branch").fill_null(lit(false)),
+        ])
+        .with_columns([
+            col("interesting_row")
+                .or(col("sample_flag_phys_msb_changes"))
+                .or(col("sample_flag_same_lin_diff_phys"))
+                .or(col("sample_flag_load_followed_by_branch"))
+                .or(col("sample_flag_load_followed_by_mispred_branch"))
+                .alias("interesting_row_final"),
+        ])
+        .filter(col("interesting_row_final"))
         .select([
             col("uop_cnt"),
             col("phys_addr"),
@@ -495,12 +491,10 @@ pub fn analyze_bin(path: &Path) -> Result<Option<Finding>> {
             col("flag_phys_pattern"),
             col("flag_branch_pattern"),
             col("flag_dc_uc_mem_acc"),
-            col("flag_branch_target_changes"),
-            col("flag_phys_msb_changes"),
-            col("flag_any_reg_changes"),
-            col("flag_same_lin_diff_phys"),
-            col("flag_load_followed_by_branch"),
-            col("flag_load_followed_by_mispred_branch"),
+            col("sample_flag_phys_msb_changes"),
+            col("sample_flag_same_lin_diff_phys"),
+            col("sample_flag_load_followed_by_branch"),
+            col("sample_flag_load_followed_by_mispred_branch"),
         ])
         .collect()
         .with_context(|| format!("failed to collect interesting rows for {}", path.display()))?;
@@ -520,17 +514,24 @@ pub fn analyze_bin(path: &Path) -> Result<Option<Finding>> {
     let br = interesting_rows.column("branch_target_rip")?.u64()?;
 
     let flag_phys_similar_reg = interesting_rows.column("flag_phys_similar_reg")?.bool()?;
-    let flag_branch_target_similar_reg = interesting_rows.column("flag_branch_target_similar_reg")?.bool()?;
+    let flag_branch_target_similar_reg =
+        interesting_rows.column("flag_branch_target_similar_reg")?.bool()?;
     let flag_phys_pattern = interesting_rows.column("flag_phys_pattern")?.bool()?;
     let flag_branch_pattern = interesting_rows.column("flag_branch_pattern")?.bool()?;
     let flag_dc_uc_mem_acc = interesting_rows.column("flag_dc_uc_mem_acc")?.bool()?;
-    let flag_branch_target_changes = interesting_rows.column("flag_branch_target_changes")?.bool()?;
-    let flag_phys_msb_changes = interesting_rows.column("flag_phys_msb_changes")?.bool()?;
-    let flag_any_reg_changes = interesting_rows.column("flag_any_reg_changes")?.bool()?;
-    let flag_same_lin_diff_phys = interesting_rows.column("flag_same_lin_diff_phys")?.bool()?;
-    let flag_load_followed_by_branch = interesting_rows.column("flag_load_followed_by_branch")?.bool()?;
-    let flag_load_followed_by_mispred_branch =
-        interesting_rows.column("flag_load_followed_by_mispred_branch")?.bool()?;
+
+    let sample_flag_phys_msb_changes = interesting_rows
+        .column("sample_flag_phys_msb_changes")?
+        .bool()?;
+    let sample_flag_same_lin_diff_phys = interesting_rows
+        .column("sample_flag_same_lin_diff_phys")?
+        .bool()?;
+    let sample_flag_load_followed_by_branch = interesting_rows
+        .column("sample_flag_load_followed_by_branch")?
+        .bool()?;
+    let sample_flag_load_followed_by_mispred_branch = interesting_rows
+        .column("sample_flag_load_followed_by_mispred_branch")?
+        .bool()?;
 
     for i in 0..interesting_rows.height() {
         let mut reasons = Vec::new();
@@ -550,23 +551,22 @@ pub fn analyze_bin(path: &Path) -> Result<Option<Finding>> {
         if flag_dc_uc_mem_acc.get(i).unwrap_or(false) {
             reasons.push("dc_uc_mem_acc == 1".to_string());
         }
-        if flag_branch_target_changes.get(i).unwrap_or(false) {
-            reasons.push("branch_target_rip changes across runs".to_string());
-        }
-        if flag_phys_msb_changes.get(i).unwrap_or(false) {
+        if sample_flag_phys_msb_changes.get(i).unwrap_or(false) {
             reasons.push("phys_addr MSBs change".to_string());
         }
-        if flag_any_reg_changes.get(i).unwrap_or(false) {
-            reasons.push("register contents change across runs".to_string());
-        }
-        if flag_same_lin_diff_phys.get(i).unwrap_or(false) {
+        if sample_flag_same_lin_diff_phys.get(i).unwrap_or(false) {
             reasons.push("same lin_addr maps to different phys_addr".to_string());
         }
-        if flag_load_followed_by_branch.get(i).unwrap_or(false) {
+        if sample_flag_load_followed_by_branch.get(i).unwrap_or(false) {
             reasons.push("load followed by branch".to_string());
         }
-        if flag_load_followed_by_mispred_branch.get(i).unwrap_or(false) {
+        if sample_flag_load_followed_by_mispred_branch.get(i).unwrap_or(false) {
             reasons.push("load followed by mispredicted branch".to_string());
+        }
+
+        // Safety net: should not happen anymore, but avoid emitting empty entries.
+        if reasons.is_empty() {
+            continue;
         }
 
         finding.res_entry.push(ResultEntry {
@@ -576,6 +576,10 @@ pub fn analyze_bin(path: &Path) -> Result<Option<Finding>> {
             branch_target_rip: br.get(i).unwrap_or(0),
             reasons,
         });
+    }
+
+    if finding.res_entry.is_empty() {
+        return Ok(None);
     }
 
     Ok(Some(finding))

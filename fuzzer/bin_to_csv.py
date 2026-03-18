@@ -122,9 +122,9 @@ def main() -> int:
     # files = sorted(LOG_DIR.glob("*.bin"))
     # print(f"Found {len(files)} binary trace files in {LOG_DIR}")
 
-    files = [Path("/home/avezzu/ibs-cpu-fuzzer/logs/ibs_log/ibs_\\x00\\x00.bin")] 
+    files = [Path("/mnt/truenas/ibs_log/ibs_\\x08\\x3c\\x0d\\x6b\\x00\\x00\\x00.bin")] 
     for bin_path in files:
-        print(f"Converting {bin_path.name} -> {bin_path.with_suffix('.csv').name}")
+        print(f"Converting {bin_path.name} -> {bin_path.with_suffix('.csv')}")
         try:
             convert_file(bin_path)
         except Exception as e:
