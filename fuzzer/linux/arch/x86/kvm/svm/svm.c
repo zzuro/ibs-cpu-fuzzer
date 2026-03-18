@@ -2257,6 +2257,8 @@ static int move_next_instruction(void)
 		fuzz_state.inj.index++; 
 	}
 
+
+redo:
     fuzz_state.inj.last_len = fuzz_state.result.length;
     fuzz_state.inj.i.bytes[fuzz_state.inj.index]++; 
 
@@ -2271,7 +2273,7 @@ static int move_next_instruction(void)
     }
 
 	if(filter_instruction()) {
-		return move_next_instruction();
+		goto redo;
 	}
 
 	//when generating new instruction, we need to reset the length
@@ -4742,7 +4744,7 @@ static void __maybe_unused read_ibs_ctrl(u64 uop_cnt, struct kvm_vcpu *vcpu)
 	u64 branch_target_rip = __read_msr(BP_IBSTGT_RIP);
 
 	if (fuzz_state.current_op == MICROOP && fuzz_state.file_open) {
-		ibs_log_event(rip_value, uop_cnt, opData3, opData1, phys_addr, lin_addr,
+		ibs_log_event(rip_value, uop_cnt, ibs_op_ctl_data.op_val, opData3, opData1, phys_addr, lin_addr,
 		saved_regs.rax, saved_regs.rbx, saved_regs.rcx, saved_regs.rdx, saved_regs.rsi, saved_regs.rdi,
 		saved_regs.r8, saved_regs.r9, saved_regs.r10, saved_regs.r11, saved_regs.r12, saved_regs.r13, saved_regs.r14, saved_regs.r15,
 		saved_regs.rflags, saved_regs.rsp, saved_regs.rbp, branch_target_rip, fuzz_state.inj.i.bytes, fuzz_state.inj.i.len);

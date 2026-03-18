@@ -21,3 +21,15 @@ static inline u8 inb(u16 port) {
                    : "memory");
     return ret;
 }
+
+static inline void insl(u16 port, void *addr, u32 count) {
+    __asm__ volatile (
+        "mov %0, %%dx\n\t"
+        "mov %1, %%rdi\n\t"
+        "mov %2, %%ecx\n\t"
+        "REP insl"
+        :
+        : "r"(port), "r"(addr), "r"(count)
+        : "dx", "rdi", "ecx", "memory"
+    );
+}

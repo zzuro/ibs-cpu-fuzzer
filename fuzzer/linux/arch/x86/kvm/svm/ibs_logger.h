@@ -91,6 +91,11 @@ struct ibs_event_record {
 	__u8 op_brn_misp;
 	__u8 op_brn_taken;
 
+	__u8 phy_addr_valid;
+	__u8 lin_addr_valid;
+
+	__u8 valid;
+
 } __packed;
 
 
@@ -102,7 +107,7 @@ void ibs_log_close(void);
 void ibs_log_hpa(uint64_t *hpa, size_t len, uint8_t *raw_instr, size_t raw_instr_len);
 void ibs_log_finish(void);
 
-void ibs_log_event(uint64_t rip_value, uint64_t uop_cnt,
+void ibs_log_event(uint64_t rip_value, uint64_t uop_cnt, uint8_t valid,
 		   union ibs_op_data3 opData3, union ibs_op_data opData1,
 		   uint64_t phys_addr, uint64_t lin_addr,
 		   uint64_t rax, uint64_t rbx, uint64_t rcx, uint64_t rdx,

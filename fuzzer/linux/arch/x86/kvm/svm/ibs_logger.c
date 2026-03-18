@@ -157,6 +157,7 @@ void ibs_log_close(void)
 }
 
 void ibs_log_event(uint64_t rip_value, uint64_t uop_cnt,
+		   uint8_t valid,
 		   union ibs_op_data3 opData3, union ibs_op_data opData1,
 		   uint64_t phys_addr, uint64_t lin_addr,
 		   uint64_t rax, uint64_t rbx, uint64_t rcx, uint64_t rdx,
@@ -225,6 +226,11 @@ void ibs_log_event(uint64_t rip_value, uint64_t uop_cnt,
 	rec.op_brn_ret    = !!opData1.op_brn_ret;
 	rec.op_brn_misp   = !!opData1.op_brn_misp;
 	rec.op_brn_taken  = !!opData1.op_brn_taken;
+
+	rec.phy_addr_valid = !!opData3.dc_phy_addr_valid;
+	rec.lin_addr_valid = !!opData3.dc_lin_addr_valid;
+
+	rec.valid = valid;
 
 	ibs_relay_write(&rec, sizeof(rec));
 }

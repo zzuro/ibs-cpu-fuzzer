@@ -262,6 +262,13 @@ static void ibs_analysis_opcode(enum opcode_id id, u64 location,
 
     run_selected_opcode(id, arg0, arg1, &res);
 
+    READ_ONCE(ptr[1]);
+    READ_ONCE(ptr[2]);
+    READ_ONCE(ptr[3]);
+    READ_ONCE(ptr[4]);
+    READ_ONCE(ptr[5]);
+    READ_ONCE(ptr[6]);
+
     if (res.rc == 0) {
         // pr_info("%s success RIP=0x%llx\n",
         //         opcode_table[id].name, res.rip);
@@ -287,11 +294,44 @@ static void ibs_routine(void *data)
         pr_err("Failed to allocate memory\n");
         return;
     }
+    //105cfc000
+    u8 *src_buf = kmalloc(4096, GFP_KERNEL);
+    src_buf[0] = 0x41;
+    src_buf[1] = 0x42;
+    src_buf[2] = 0x43;
+    src_buf[3] = 0x44;
+
+    /* virtual address */
+    pr_info("src_buf virtual address: %px\n", src_buf);
+    /* physical address */
+    pr_info("src_buf physical address: %pa\n", &(phys_addr_t){ virt_to_phys(src_buf) }); 
+    pr_info("ptr physical address: %pa\n", &(phys_addr_t){ virt_to_phys(ptr) }); 
+    /*
+    4] src_buf virtual address: ff1590b98147c5d0
+    [ 1230.701235] src_buf physical address: 0x000000010147c5d0
+    [ 1230.701236] ptr physical address: 0x000000010149a000
+
+    */
+    u64 addr =  0xff1590b99147c000; //0x000590b98147c5d0
+    //0x00000001099a9f60
+    map_physical_to_virtual(0x000000010149a000, addr);
+    //pr_info("src_buf physical address: %pa\n", &(phys_addr_t){ virt_to_phys(src_buf) });
+
+     /* Write the physical address of src_buf to ptr */
 
     for (int j = 0; j < 130; j++)
     {
-        ibs_analysis_opcode(OP_OUT_DX_EAX, j, 0x0ffff, 0, ptr);
+        ibs_analysis_opcode(OP_INSD, j, 0xADD, addr, ptr); //46e61fc0
     }
+
+    kfree(src_buf);
+    kfree(ptr);
+
+    // u64 addr =  0xff1590b98147c000;
+    // map_physical_to_virtual(0x128cf1000, 0xff1590b98147c000);
+    
+    // //*(u64*)addr = 0xdeadbeefdeadbeefULL;
+	// pr_info("addr va: %llx\n", *(u64*)addr);
 }
 
 static int __init vmsave_module_init(void)

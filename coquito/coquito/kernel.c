@@ -9,6 +9,7 @@
 #include "sse.h"
 #include "vectorops.h"
 #include <stdbool.h>
+#include "ports.h"
 
 /*
     Ensure that we target the correct environment

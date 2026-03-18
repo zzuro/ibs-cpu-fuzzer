@@ -92,7 +92,7 @@ def handle_event_record(rec: IbsEventRecord, out) -> None:
             "r12","r13","r14","r15","rsp","rbp","rflags","op_type",
             "mem_width","dc_uc_mem_acc","dc_wc_mem_acc","dc_miss",
             "op_microcode","op_brn_fuse","op_brn_ret","op_brn_misp",
-            "op_brn_taken",
+            "op_brn_taken, phy_addr_valid, lin_addr_valid, valid"
         ]) + "\n")
 
     out.write(",".join([
@@ -128,6 +128,9 @@ def handle_event_record(rec: IbsEventRecord, out) -> None:
         str(rec.op_brn_ret),
         str(rec.op_brn_misp),
         str(rec.op_brn_taken),
+        str(rec.dc_phy_addr_valid),
+        str(rec.dc_lin_addr_valid),
+        str(rec.valid)
     ]) + "\n")
 
     last_was_hpa = False
@@ -321,7 +324,7 @@ def newest_files(path="../logs/ibs_log/", n=32):
 
 def main() -> int:
 
-    last_files = newest_files("../logs/ibs_log/", n=32)
+    #last_files = newest_files("../logs/ibs_log/", n=32)
     
     try:
         dev_fd = open_device()
@@ -354,10 +357,11 @@ def main() -> int:
     # with first_file.open() as f:
     #     data = json.load(f) 
 
-    instr = extract_bytes(last_files[2])
+    instr = extract_bytes("\\x6D")
+    print(f"Testing with instruction bytes: {instr.hex()}", file=sys.stderr)
     st = set_instruction(instr, len(instr))
     ioctl_set_state(dev_fd, st)
-    ioctl_set_register_value(dev_fd, 0xF009900000000)
+    ioctl_set_register_value(dev_fd, 0x0009900000080)
     qemu_script = Path("./../vms/qemu.sh")
 
     try:

@@ -70,6 +70,10 @@ class IbsEventRecord(ctypes.Structure):
         ("op_brn_ret", ctypes.c_uint8),
         ("op_brn_misp", ctypes.c_uint8),
         ("op_brn_taken", ctypes.c_uint8),
+
+        ("dc_phy_addr_valid", ctypes.c_uint8),
+        ("dc_lin_addr_valid", ctypes.c_uint8),
+        ("valid", ctypes.c_uint8),
     ]
 
 HEADER_SIZE = ctypes.sizeof(IbsRecordHeader)

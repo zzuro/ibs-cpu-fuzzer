@@ -26,7 +26,20 @@ enum opcode_id {
     OP_INSB,
     OP_INSD,
     OP_OUTSB,
-    OP_OUTSD
+    OP_OUTSD,
+    OP_RDTSC,
+    OP_RDPMC,
+    OP_CLFLUSH,
+    OP_WRMSR,
+    OP_VMSAVE,
+    OP_MOVSQ,
+    OP_SIDT,
+    OP_SGDT,
+    OP_WBINVD,
+    OP_CLWB,
+    OP_INVLPG,
+    OP_MONITOR,
+    OP_UDBGRD,
 };
 
 struct opcode_desc {
@@ -41,8 +54,3 @@ extern struct opcode_desc opcode_table[];
 
 int run_selected_opcode(enum opcode_id id, u64 arg0, u64 arg1,
                         struct opcode_result *out);
-
-int try_nop(u64 arg0, u64 arg1, struct opcode_result *out);
-int try_pause(u64 arg0, u64 arg1, struct opcode_result *out);
-int try_cpuid(u64 arg0, u64 arg1, struct opcode_result *out);
-int try_ud2(u64 arg0, u64 arg1, struct opcode_result *out);
