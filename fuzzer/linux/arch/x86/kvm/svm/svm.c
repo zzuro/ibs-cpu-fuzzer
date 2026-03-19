@@ -2346,13 +2346,20 @@ static int move_next_instruction(void)
 		init_inj(&fuzz_state->search_range.start, &fuzz_state->inj);
 		fuzz_state->inj.index = 0;
 	} else {
+
+redo:
 		if (fuzz_state->result.length != fuzz_state->inj.last_len &&
 		    fuzz_state->inj.index < fuzz_state->result.length - 1) {
 			fuzz_state->inj.index++;
 		}
 
-redo:
     	fuzz_state->inj.last_len = fuzz_state->result.length;
+
+		//weird bug when resuiming
+		if(fuzz_state->inj.index >= fuzz_state->inj.last_len) {
+			fuzz_state->inj.index = fuzz_state->inj.last_len - 1;
+		}
+
     	fuzz_state->inj.i.bytes[fuzz_state->inj.index]++; 
 
     	while (fuzz_state->inj.index >= 0 && fuzz_state->inj.i.bytes[fuzz_state->inj.index] == 0)
@@ -2485,6 +2492,7 @@ static void fetch_microop(int exit_code, struct kvm_vcpu *vcpu)
 	{
 		write_instr(vcpu, REGISTER_VALUE, fuzz_state->per_instruction_counter * 1024); //increase offset to see if it affects micro-op 
 		reset_state(vcpu);
+
 		//a very dirty way to synchronize with user-space
 		if(get_ack_event())
 		{

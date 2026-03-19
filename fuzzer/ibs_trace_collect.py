@@ -601,6 +601,7 @@ def core_worker(core_id: int, args, shared_stop_event, shared_print_lock) -> Non
 
     try:
         dev_fd = open_device()
+        ioctl_ack_set(dev_fd, 1)
 
         if args.resume:
             st = load_state_from_file(state_path)
@@ -616,7 +617,7 @@ def core_worker(core_id: int, args, shared_stop_event, shared_print_lock) -> Non
         ts_print(
             f"[core {core_id}] Started QEMU pinned to core {core_id} via {qemu_script} (pid={qemu_proc.pid})",
             file=sys.stderr,
-        )
+        )   
 
         trace_loop_with_timeout(
             core_id=core_id,
