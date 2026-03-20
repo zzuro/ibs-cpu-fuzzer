@@ -64,7 +64,7 @@ MODULE_AUTHOR("Alessandro Vezzù");
 MODULE_DESCRIPTION("Kernel module to write a memory pointer to RAX and execute VMSAVE to a previously allocated page");
 MODULE_VERSION("1.0");
 
-#define CPU_NUMBER_IBS_USE 5
+#define CPU_NUMBER_IBS_USE 3
 
 #define BYTES_PER_LINE 16
 static void __maybe_unused hexdump(const void *addr, size_t len)
@@ -281,6 +281,7 @@ static void ibs_analysis_opcode(enum opcode_id id, u64 location,
     read_ibs_ctrl(location, res.rip);
 }
 
+
 static void ibs_routine(void *data)
 {
     pr_info("IBS routine called on CPU %d\n", smp_processor_id());
@@ -313,25 +314,33 @@ static void ibs_routine(void *data)
 
     */
     u64 addr =  0xff1590b99147c000; //0x000590b98147c5d0
-    //0x00000001099a9f60
-    map_physical_to_virtual(0x000000010149a000, addr);
+    //0x00000001099a9f60    
+    map_physical_to_virtual(0x11eadd000, addr);
     //pr_info("src_buf physical address: %pa\n", &(phys_addr_t){ virt_to_phys(src_buf) });
 
      /* Write the physical address of src_buf to ptr */
 
-    for (int j = 0; j < 130; j++)
+    // for(int i = 0; i < 8; i++) {
+    //     *((u64*)(addr)+i) = 0xdeadbeefdeadbeefULL;
+    //     pr_info("addr va: %llx\n", *((u64*)(addr)+i));
+    // }
+    
+
+    for (int j = 0; j < 1000; j++)
     {
-        ibs_analysis_opcode(OP_INSD, j, 0xADD, addr, ptr); //46e61fc0
+        ibs_analysis_opcode(OP_RDMSR, j, IBS_OP_DATA2, addr, ptr); 
     }
 
     kfree(src_buf);
     kfree(ptr);
 
-    // u64 addr =  0xff1590b98147c000;
-    // map_physical_to_virtual(0x128cf1000, 0xff1590b98147c000);
+    // // u64 addr =  0xff1590b98147c000;
+    // // map_physical_to_virtual(0x128cf1000, 0xff1590b98147c000);
     
-    // //*(u64*)addr = 0xdeadbeefdeadbeefULL;
-	// pr_info("addr va: %llx\n", *(u64*)addr);
+    // // //*(u64*)addr = 0xdeadbeefdeadbeefULL;
+	// for(int i = 0; i < 8; i++) {
+    //     pr_info("addr va: %llx\n", *((u64*)(addr)+i));
+    // }
 }
 
 static int __init vmsave_module_init(void)

@@ -357,7 +357,7 @@ def main() -> int:
     # with first_file.open() as f:
     #     data = json.load(f) 
 
-    instr = extract_bytes("\\x6D")
+    instr = extract_bytes("\\x21\\x04\\xb6")
     print(f"Testing with instruction bytes: {instr.hex()}", file=sys.stderr)
     st = set_instruction(instr, len(instr))
     ioctl_set_state(dev_fd, st)

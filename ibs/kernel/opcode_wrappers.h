@@ -40,6 +40,16 @@ enum opcode_id {
     OP_INVLPG,
     OP_MONITOR,
     OP_UDBGRD,
+    OP_RMPUPDATE,
+    OP_LFENCE,
+    OP_RDTSCP,
+    OP_PREFETCHW,
+    OP_PREFETCHWT1,
+    OP_READ_CR0,
+    OP_READ_CR2,
+    OP_READ_CR3,
+    OP_READ_CR4,
+    OP_RDMSR,
 };
 
 struct opcode_desc {

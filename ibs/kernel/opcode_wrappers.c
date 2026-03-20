@@ -29,7 +29,7 @@ int fn_name(u64 arg0, u64 arg1, struct opcode_result *out)                    \
         "movl $1, %%ecx\n\t"                                                 \
         "movl $-1, %[vec]\n\t"                                               \
         "leaq 1f(%%rip), %[rip]\n\t"                                         \
-        "1: .byte 0xF3\n\t" /* REP prefix */                                 \
+        "1: \n\t"                                   \
         insn_asm "\n\t"                                                      \
         "2:\n\t"                                                             \
         ".section .fixup,\"ax\"\n\t"                                         \
@@ -407,6 +407,49 @@ int fn_name(u64 arg0, u64 arg1, struct opcode_result *out)                     \
     return rc;                                                                 \
 }
 
+#define DEFINE_OPCODE_WRAPPER_RDMSR(fn_name)                                   \
+int fn_name(u64 arg0, u64 arg1, struct opcode_result *out)                     \
+{                                                                              \
+    int rc;                                                                    \
+    int vec;                                                                   \
+    u64 rip;                                                                   \
+    u32 ecx_out = 0;                                                           \
+                                                                               \
+    (void)arg0;                                                                \
+    (void)arg1;                                                                \
+                                                                               \
+    asm volatile(                                                              \
+        "movl $0, %[rc]\n\t"                                                   \
+        "movl $-1, %[vec]\n\t"                                                 \
+        "leaq 1f(%%rip), %[rip]\n\t"                                           \
+        "movl $0xc0011033, %%ecx\n\t"                                          \
+        "1:\n\t"                                                               \
+        ".byte 0xf3, 0xf3, 0x0f, 0x32\n\t"                                           \
+        "movl %%ecx, %[ecx_out]\n\t"                                           \
+        "2:\n\t"                                                               \
+        ".section .fixup,\"ax\"\n\t"                                           \
+        "3:\n\t"                                                               \
+        "movl %%eax, %[vec]\n\t"                                               \
+        "movl %%ecx, %[ecx_out]\n\t"                                           \
+        "movl $-1, %[rc]\n\t"                                                  \
+        "jmp 2b\n\t"                                                           \
+        ".previous\n\t"                                                        \
+        _ASM_EXTABLE_FAULT(1b, 3b)                                             \
+        : [rc] "=&r"(rc), [vec] "=&r"(vec), [rip] "=&r"(rip),                  \
+          [ecx_out] "=&r"(ecx_out)                                             \
+        :                                                                      \
+        : "rax", "rcx", "rdx", "cc", "memory");                                \
+                                                                               \
+                                                                               \
+    if (out) {                                                                 \
+        out->rc = rc;                                                          \
+        out->vec = vec;                                                        \
+        out->rip = rip;                                                        \
+    }                                                                          \
+                                                                               \
+    return rc;                                                                 \
+}
+
 #define DEFINE_OPCODE_WRAPPER_REP_MOVSQ(fn_name, clobbers...)                     \
 int fn_name(u64 src, u64 dst, u64 count, struct opcode_result *out)              \
 {                                                                                 \
@@ -443,6 +486,88 @@ int fn_name(u64 src, u64 dst, u64 count, struct opcode_result *out)             
     return rc;                                                                    \
 }
 
+#define DEFINE_OPCODE_WRAPPER_RMPUPDATE(fn_name, clobbers...)                    \
+int fn_name(u64 spa, u64 val, struct opcode_result *out)                         \
+{                                                                                \
+	int rc;                                                                  \
+	int vec;                                                                 \
+	u64 rip;                                                                 \
+	u32 eax_out;                                                             \
+	                                                                             \
+	asm volatile(                                                            \
+		"movl $0, %[rc]\n\t"                                             \
+		"movl $-1, %[vec]\n\t"                                           \
+		"mov %[spa], %%rax\n\t"                                          \
+		"mov %[val], %%rcx\n\t"                                          \
+		"leaq 1f(%%rip), %[rip]\n\t"                                     \
+		"1: rmpupdate %%rax, %%rcx\n\t"                                  \
+		"movl %%eax, %[eax_out]\n\t"                                     \
+		"2:\n\t"                                                         \
+		".section .fixup,\"ax\"\n\t"                                     \
+		"3:\n\t"                                                         \
+		"movl %%eax, %[vec]\n\t"                                         \
+		"movl $-1, %[rc]\n\t"                                            \
+		"jmp 2b\n\t"                                                     \
+		".previous\n\t"                                                  \
+		_ASM_EXTABLE_FAULT(1b, 3b)                                       \
+		: [rc] "=&r"(rc),                                                \
+		  [vec] "=&r"(vec),                                              \
+		  [rip] "=&r"(rip),                                              \
+		  [eax_out] "=&r"(eax_out)                                       \
+		: [spa] "r"(spa), [val] "r"(val)                                 \
+		: "rax", "rcx", "cc", "memory", ##clobbers);                     \
+	                                                                             \
+	if (out) {                                                             \
+		out->rc = rc;                                                  \
+		out->vec = (rc == 0) ? (int)eax_out : vec;                     \
+		out->rip = rip;                                                \
+	}                                                                        \
+	                                                                             \
+	return rc;                                                               \
+}
+
+#define DEFINE_OPCODE_WRAPPER_ECX_EDX_EAX_OUT0(fn_name, insn_asm, clobbers...) \
+int fn_name(u64 arg0, u64 arg1, struct opcode_result *out)                      \
+{                                                                                \
+    int rc;                                                                      \
+    int vec;                                                                     \
+    u64 rip;                                                                     \
+    u32 aux = 0, lo = 0, hi = 0;                                                 \
+                                                                                 \
+    (void)arg0;                                                                  \
+    (void)arg1;                                                                  \
+                                                                                 \
+    asm volatile(                                                                \
+        "movl $0, %[rc]\n\t"                                                     \
+        "movl $-1, %[vec]\n\t"                                                   \
+        "leaq 1f(%%rip), %[rip]\n\t"                                             \
+        "1: " insn_asm "\n\t"                                                    \
+        "movl %%ecx, %[aux]\n\t"                                                 \
+        "movl %%eax, %[lo]\n\t"                                                  \
+        "movl %%edx, %[hi]\n\t"                                                  \
+        "2:\n\t"                                                                 \
+        ".section .fixup,\"ax\"\n\t"                                             \
+        "3:\n\t"                                                                 \
+        "movl %%eax, %[vec]\n\t"                                                 \
+        "movl $-1, %[rc]\n\t"                                                    \
+        "jmp 2b\n\t"                                                             \
+        ".previous\n\t"                                                          \
+        _ASM_EXTABLE_FAULT(1b, 3b)                                               \
+        : [rc] "=&r"(rc), [vec] "=&r"(vec), [rip] "=&r"(rip),                    \
+          [aux] "=&r"(aux), [lo] "=&r"(lo), [hi] "=&r"(hi)                       \
+        :                                                                        \
+        : "rax", "rcx", "rdx", "cc", "memory", ##clobbers);                      \
+                                                                                 \
+    if (out) {                                                                   \
+        out->rc = rc;                                                            \
+        out->vec = vec;                                                          \
+        out->rip = rip;                                                          \
+        /* store aux/lo/hi somewhere too if your struct supports it */           \
+    }                                                                            \
+                                                                                 \
+    return rc;                                                                   \
+}
+
 struct opcode_desc opcode_table[] = {
     OPENTRY(OP_NOP,   true,  false, false),
     OPENTRY(OP_PAUSE, true,  false, false),
@@ -473,6 +598,16 @@ struct opcode_desc opcode_table[] = {
     OPENTRY(OP_INVLPG, true, true, false),
     OPENTRY(OP_MONITOR, true, true, false),
     OPENTRY(OP_UDBGRD, true, true, false),
+    OPENTRY(OP_RMPUPDATE, true, true, true),
+    OPENTRY(OP_LFENCE, true, false, false),
+    OPENTRY(OP_RDTSCP, true, false, false),
+    OPENTRY(OP_PREFETCHW, true, true, false),
+    OPENTRY(OP_PREFETCHWT1, true, true, false),
+    OPENTRY(OP_READ_CR0, true, false, false),
+    OPENTRY(OP_READ_CR2, true, false, false),
+    OPENTRY(OP_READ_CR3, true, false, false),
+    OPENTRY(OP_READ_CR4, true, false, false),
+    OPENTRY(OP_RDMSR, true, true, false),
     {}
 };
 
@@ -518,7 +653,20 @@ DEFINE_OPCODE_WRAPPER_MEMARG0(try_sgdt, "sgdt %[mem]")
 DEFINE_OPCODE_WRAPPER_RAX(try_monitor, "monitor")
 
 DEFINE_OPCODE_WRAPPER_RAX_RCX(try_udbgrd, ".byte 0x0f, 0x0e")
+DEFINE_OPCODE_WRAPPER_RMPUPDATE(test_rmpupdate)
 
+DEFINE_OPCODE_WRAPPER_ECX_EDX_EAX_OUT0(try_rdtscp, "rdtscp")
+DEFINE_OPCODE_WRAPPER0(try_lfence, "lfence")
+
+DEFINE_OPCODE_WRAPPER_MEMARG0(try_prefetchw,   "prefetchw %[mem]")
+DEFINE_OPCODE_WRAPPER_MEMARG0(try_prefetchwt1, "prefetchwt1 %[mem]")
+
+DEFINE_OPCODE_WRAPPER0(try_read_cr0, "mov %%cr0, %%rax")
+DEFINE_OPCODE_WRAPPER0(try_read_cr2, "mov %%cr2, %%rax")
+DEFINE_OPCODE_WRAPPER0(try_read_cr3, "mov %%cr3, %%rax")
+DEFINE_OPCODE_WRAPPER0(try_read_cr4, "mov %%cr4, %%rax")
+
+DEFINE_OPCODE_WRAPPER_RDMSR(try_rdmsr)
 
 
 int run_selected_opcode(enum opcode_id id, u64 arg0, u64 arg1,
@@ -583,6 +731,24 @@ int run_selected_opcode(enum opcode_id id, u64 arg0, u64 arg1,
         return try_monitor(arg0, arg1, out);
     case OP_UDBGRD:
         return try_udbgrd(arg0, arg1, out);
+    case OP_LFENCE:
+        return try_lfence(arg0, arg1, out);
+    case OP_RDTSCP:
+        return try_rdtscp(arg0, arg1, out);
+    case OP_PREFETCHW:
+        return try_prefetchw(arg0, arg1, out);
+    case OP_PREFETCHWT1:
+        return try_prefetchwt1(arg0, arg1, out);
+    case OP_READ_CR0:
+        return try_read_cr0(arg0, arg1, out);
+    case OP_READ_CR2:
+        return try_read_cr2(arg0, arg1, out);
+    case OP_READ_CR3:
+        return try_read_cr3(arg0, arg1, out);
+    case OP_READ_CR4:
+        return try_read_cr4(arg0, arg1, out);
+    case OP_RDMSR:
+        return try_rdmsr(arg0, arg1, out);
     default:
         if (out) {
             out->rc = -1;
