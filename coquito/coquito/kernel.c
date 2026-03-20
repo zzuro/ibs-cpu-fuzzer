@@ -41,6 +41,19 @@ static void init_data_bss(void)
         *p++ = 0;
 }
 
+//To fuzz MSRs,
+static void __write_msr(uint32_t msr_register, uint64_t msr_value) {
+    uint32_t low = (uint32_t)msr_value;
+    uint32_t high = (uint32_t)(msr_value >> 32);
+
+    asm volatile(
+        "wrmsr"
+        :                                         // No output operands
+        : "c"(msr_register), "a"(low), "d"(high)  // Input operands
+    );
+}
+
+
 void __attribute__((noreturn)) kernel_main(void);
 
 void __attribute__((noreturn)) kernel_main(void)

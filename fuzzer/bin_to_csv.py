@@ -32,7 +32,7 @@ def read_exact(f, n: int):
 
 
 def convert_file(bin_path: Path) -> None:
-    csv_path = bin_path.with_suffix(".csv")
+    csv_path = Path("/home/avezzu/ibs-cpu-fuzzer/analysis") / bin_path.name.replace(".bin", ".csv")
     last_was_hpa = False
 
     with open(bin_path, "rb") as f, open(csv_path, "w", buffering=1) as out:
@@ -119,9 +119,10 @@ def main() -> int:
         print(f"directory not found: {LOG_DIR}", file=sys.stderr)
         return 1
 
-    files = sorted(LOG_DIR.glob("*.bin"))
-    print(f"Found {len(files)} binary trace files in {LOG_DIR}")
+    # files = sorted(LOG_DIR.glob("*.bin"))
+    # print(f"Found {len(files)} binary trace files in {LOG_DIR}")
 
+    files = [Path("/mnt/ssd/ibs_log/ibs_\\x0b\\x04\\x9d\\xf4\\x00\\x00\\x00.bin")]
     for bin_path in files:
         if "snap" in bin_path.name:
             continue

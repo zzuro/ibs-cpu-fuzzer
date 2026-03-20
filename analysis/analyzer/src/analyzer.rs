@@ -8,7 +8,8 @@ use std::ptr;
 
 use crate::writer::{Finding, ResultEntry};
 
-const PAGE_SIZE: u64 = 0x100000000; 
+const HPA_RANGE: u64 = 0x100000000; 
+const PAGE_SIZE: u64 = 0x1000;
 
 const IBS_REC_HPA: u32 = 2;
 const IBS_REC_EVENT: u32 = 3;
@@ -97,6 +98,7 @@ fn parse_bin_to_lazyframe(path: &Path) -> Result<ParsedTrace> {
 
     let mut guest_hpas = Vec::<u64>::new();
 
+    let mut rip = Vec::<u64>::new();
     let mut uop_cnt = Vec::<i64>::new();
     let mut phys_addr = Vec::<u64>::new();
     let mut lin_addr = Vec::<u64>::new();
@@ -180,6 +182,7 @@ fn parse_bin_to_lazyframe(path: &Path) -> Result<ParsedTrace> {
 
                 uop_cnt.push(rec.uop_cnt as i64);
                 phys_addr.push(rec.phys_addr);
+                rip.push(rec.rip);
                 lin_addr.push(rec.lin_addr);
                 branch_target_rip.push(rec.branch_target_rip);
 
@@ -222,6 +225,7 @@ fn parse_bin_to_lazyframe(path: &Path) -> Result<ParsedTrace> {
     let df = DataFrame::new_infer_height(vec![
         Series::new("uop_cnt".into(), uop_cnt).into(),
         Series::new("phys_addr".into(), phys_addr).into(),
+        Series::new("rip".into(), rip).into(),
         Series::new("lin_addr".into(), lin_addr).into(),
         Series::new("branch_target_rip".into(), branch_target_rip).into(),
 
@@ -319,7 +323,7 @@ pub fn analyze_bin(path: &Path) -> Result<Option<Finding>> {
 
     let target_pages: Vec<u64> = guest_hpas
         .into_iter()
-        .map(|addr| addr / PAGE_SIZE)
+        .map(|addr| addr / HPA_RANGE)
         .collect();
 
     let page_series = Series::new(PlSmallStr::from("target_pages"), target_pages);
@@ -337,7 +341,7 @@ pub fn analyze_bin(path: &Path) -> Result<Option<Finding>> {
     let lf = lf
         .filter(
             col("phys_addr")
-                .floor_div(lit(PAGE_SIZE))
+                .floor_div(lit(HPA_RANGE))
                 .is_in(lit(page_series).implode(), false)
                 .not(),
         )
@@ -369,11 +373,49 @@ pub fn analyze_bin(path: &Path) -> Result<Option<Finding>> {
                 .or(col("flag_dc_uc_mem_acc"))
                 .alias("interesting_row"),
         ]);
+    
 
-    // Sample-level flag: same lin_addr -> different phys_addr.
+    let low_uop_pages_df = lf
+        .clone()
+        .with_columns([
+            (col("phys_addr") / lit(PAGE_SIZE)).alias("physical_page"),
+            (col("rip").and(lit(0xffffffffff000u64))).alias("rip_48bit"),
+        ])
+        .filter(col("uop_cnt").lt(lit(800u32)))
+        .select([col("physical_page"), col("rip_48bit")])
+        .unique(None, UniqueKeepStrategy::Any)
+        .collect()?;
+    
+    let low_uop_pages_series: Series = low_uop_pages_df
+        .column("physical_page")?
+        .as_materialized_series()
+        .clone();
+
+    let rip_48bit_series: Series = low_uop_pages_df
+        .column("rip_48bit")?
+        .as_materialized_series()
+        .clone();
+    
     let lin_phys_conflicts = lf
         .clone()
+        .with_columns([
+            (col("phys_addr") / lit(PAGE_SIZE)).alias("physical_page"),
+        ])
         .filter(col("lin_addr").eq(lit(0u64)))
+        .filter(col("uop_cnt").lt(lit(1300u32)))
+        .filter(col("uop_cnt").gt(lit(800u32)))
+        .filter(
+            col("phys_addr")
+                .floor_div(lit(PAGE_SIZE))
+                .is_in(lit(low_uop_pages_series).implode(), false)
+                .not(),
+        )
+        .filter(
+            col("phys_addr")
+                .and(lit(0xffffffffff000u64))
+                .is_in(lit(rip_48bit_series).implode(), false)
+                .not(),
+        )
         .group_by([col("uop_cnt"), col("lin_addr")])
         .agg([col("phys_addr").n_unique().alias("group_n_unique")])
         .filter(col("group_n_unique").gt(lit(1)))
@@ -555,7 +597,7 @@ pub fn analyze_bin(path: &Path) -> Result<Option<Finding>> {
             reasons.push("phys_addr MSBs change".to_string());
         }
         if sample_flag_same_lin_diff_phys.get(i).unwrap_or(false) {
-            reasons.push("same lin_addr maps to different phys_addr".to_string());
+            reasons.push("phys_addr not in VM range".to_string());
         }
         if sample_flag_load_followed_by_branch.get(i).unwrap_or(false) {
             reasons.push("load followed by branch".to_string());

@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
+use tempfile::NamedTempFile;
 
 #[derive(Debug, Serialize, Deserialize, Default)]
 pub struct AnalyzerState {
@@ -21,15 +22,25 @@ impl AnalyzerState {
         Ok(state)
     }
 
-    pub fn save(&self, path: &Path) -> Result<()> {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-
-        let json = serde_json::to_string_pretty(self)?;
-        fs::write(path, json)?;
-        Ok(())
+pub fn save(&self, path: &Path) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
     }
+
+    let json = serde_json::to_string_pretty(self)?;
+
+    // Create temp file in same directory (important for atomic rename)
+    let mut temp = NamedTempFile::new_in(path.parent().unwrap())?;
+
+    use std::io::Write;
+    temp.write_all(json.as_bytes())?;
+    temp.flush()?; // ensure it's written
+
+    // Persist (atomic replace)
+    temp.persist(path)?;
+
+    Ok(())
+}
 
     pub fn has_processed(&self, file: &Path) -> bool {
         let key = normalize_path(file);

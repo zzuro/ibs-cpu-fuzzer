@@ -16,11 +16,11 @@ import re
 
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
-from fuzzer.fuzz_state import FuzzerState, INSTRUCTION
+from fuzzer.fuzz_state import FuzzerState, INSTRUCTION, FuzzerStateSnapshot
 from fuzzer.ioctl import _IOR, _IOW, _IO, _ioctl
-from fuzzer.relayfs import IbsRecordHeader, IbsHpaRecord, IbsEventRecord, IBS_OP_LOAD, IBS_OP_STORE, IBS_OP_BRANCH, memwithStrings, HEADER_SIZE, HPA_SIZE, EVENT_SIZE, IBS_REC_EVENT, IBS_REC_HPA
+from fuzzer.relayfs import IbsRecordHeader, IbsHpaRecord, IbsEventRecord, IBS_OP_LOAD, IBS_OP_STORE, IBS_OP_BRANCH, memwithStrings, HEADER_SIZE, HPA_SIZE, EVENT_SIZE, IBS_REC_EVENT, IBS_REC_HPA, IBS_REC_FINISH
 
-IBS_PREFIX = str("./ibs_")
+IBS_PREFIX = str("./tester_ibs_")
 IBS_SUFFIX = ".csv"
 
 
@@ -29,8 +29,8 @@ LOG_DIR = Path("/home/avezzu/ibs-cpu-fuzzer/logs/ibs_findings")
 DEVICE_NAME = "/dev/svm_ibs_dev"
 MAX_INSN_LENGTH = 15
 
-#trace is dependent on CPU
-TRACE_PATH = "/sys/kernel/debug/ibs_logger/trace2"
+#trace dependents on CPU
+TRACE_PATH = "/sys/kernel/debug/ibs_logger/cpu2/trace2"
 POLL_SLEEP_SEC = 0.05
 
 FUZZ_IOC_GET_STATE = _IOR(ord('a'), ord('c'), FuzzerState)  
@@ -39,6 +39,8 @@ FUZZ_IOC_OPEN_LOG = _IO(ord('a'), ord('e'))
 FUZZ_IOC_CLOSE_LOG = _IO(ord('a'), ord('f'))
 FUZZ_IOC_MOVE_NEXT_INSTR = _IO(ord('a'), ord('g'))
 FUZZ_IOC_SET_REGISTER_VALUE = _IOW(ord('a'), ord('h'), ctypes.c_uint64)
+FUZZ_IOC_ACK_SET = _IOW(ord('a'), ord('l'), ctypes.c_uint64)
+FUZZ_IOC_SET_GLOBAL_FUZZ_STATE = _IOW(ord('a'), ord('j'), FuzzerStateSnapshot)
 
 
 def generate_filename(insn_bytes: bytes) -> str:
@@ -159,23 +161,29 @@ def ioctl_set_register_value(fd: int, value: int) -> None:
     if rc < 0:
         e = ctypes.get_errno()
         raise OSError(e, f"ioctl(SET_REGISTER_VALUE) failed: {os.strerror(e)}")
+    
+def ioctl_ack_set(fd: int, value: int) -> None:
+    rc = _ioctl(fd, FUZZ_IOC_ACK_SET, ctypes.byref(ctypes.c_uint64(value)))
+    if rc < 0:
+        e = ctypes.get_errno()
+        raise OSError(e, f"ioctl(ACK_SET) failed: {os.strerror(e)}")
 
 def set_instruction(instr : bytes, instr_len : int) -> FuzzerState:
     st = FuzzerState()
 
-    st.total_range.start.len = 0
-    st.total_range.end.len = 0
+    st.search_range.start.len = 0
+    st.search_range.end.len = 0
     for i in range(MAX_INSN_LENGTH):
-        st.total_range.start.bytes[i] = 0x00
-        st.total_range.end.bytes[i] = 0xFF
+        st.search_range.start.bytes[i] = 0x00
+        st.search_range.end.bytes[i] = 0xFF
 
-    st.total_range.started = True
+    st.search_range.started = True
     for i in range(instr_len):
         st.inj.i.bytes[i] = instr[i]
 
     st.inj.i.len = instr_len
     st.inj.index = 0
-    st.inj.last_len = 0
+    st.inj.last_len = -1
 
     st.current_op = INSTRUCTION
     st.fetch_counter = 0
@@ -183,6 +191,25 @@ def set_instruction(instr : bytes, instr_len : int) -> FuzzerState:
     st.file_open = False
 
     return st
+
+def set_global_state(fd: int) -> FuzzerStateSnapshot:
+    st = FuzzerStateSnapshot()
+    st.total_range.start.len = 0
+    st.total_range.end.len = 0
+    for i in range(MAX_INSN_LENGTH):
+        st.total_range.start.bytes[i] = 0x00
+        st.total_range.end.bytes[i] = 0xFF
+
+    st.total_range.started = True
+    st.done = False
+    st.range_marker.len = 0
+    for i in range(MAX_INSN_LENGTH):
+        st.range_marker.bytes[i] = 0xFF
+
+    rc = _ioctl(fd, FUZZ_IOC_SET_GLOBAL_FUZZ_STATE, ctypes.byref(st))
+    if rc < 0:
+        e = ctypes.get_errno()
+        raise OSError(e, f"ioctl(GET_STATE) failed: {os.strerror(e)}")
 
 def parse_qemu_script(script_path: Path) -> list[str]:
     content = script_path.read_text()
@@ -236,9 +263,6 @@ def trace_loop(
     device_fd: int,
     qemu_proc: subprocess.Popen,
 ) -> int:
-    ioctl_close_log(device_fd)  
-    ioctl_open_log(device_fd)
-
     relay_fd = open(TRACE_PATH, "rb", buffering=0)
     current_insn_bytes = None
     out = None
@@ -258,10 +282,12 @@ def trace_loop(
                 continue
             
             if current_insn_bytes == None:
+                ioctl_ack_set(device_fd, 1)
                 current_insn_bytes = bytes(hdr.instruction[:hdr.instruction_len])
                 current_path = generate_filename(current_insn_bytes)
                 out = open(current_path, "w", buffering=1)
             elif current_insn_bytes != bytes(hdr.instruction[:hdr.instruction_len]):
+                ioctl_ack_set(device_fd, 1)
                 if out is not None:
                     out.close()
                     relay_fd.close()
@@ -278,7 +304,21 @@ def trace_loop(
 
             full_blob = header_blob + body_blob
 
-            if hdr.record_type == IBS_REC_HPA:
+            if hdr.record_type == IBS_REC_FINISH:
+                ioctl_ack_set(device_fd, 1)
+                print(
+                    f"[core {2}] Received FINISH record, stopping.",
+                    file=sys.stderr,
+                    )
+                if out is not None:
+                    out.close()
+                if qemu_proc is not None:
+                    print(f"[core {2}] Stopping QEMU ...", file=sys.stderr)
+                    kill_qemu(qemu_proc)
+                relay_fd.close()
+                return 0
+
+            elif hdr.record_type == IBS_REC_HPA:
                 if hdr.record_len != HPA_SIZE:
                     print(f"WARN: malformed HPA record with len={hdr.record_len}, skipping", file=sys.stderr)
                     continue
@@ -321,7 +361,7 @@ def newest_files(path="../logs/ibs_log/", n=32):
 
 def main() -> int:
 
-    last_files = newest_files("../logs/ibs_log/", n=32)
+    #last_files = newest_files("../logs/ibs_log/", n=32)
     
     try:
         dev_fd = open_device()
@@ -354,10 +394,17 @@ def main() -> int:
     # with first_file.open() as f:
     #     data = json.load(f) 
 
-    instr = extract_bytes(last_files[2])
+    instr = extract_bytes("/mnt/ssd/ibs_log/ibs_\\x03\\x04\\x9d\\x9d\\x00\\x00\\x00.bin")
+    print(f"Testing instruction: {instr.hex()}")
     st = set_instruction(instr, len(instr))
+    set_global_state(dev_fd)
     ioctl_set_state(dev_fd, st)
-    ioctl_set_register_value(dev_fd, 0xF009900000000)
+    ioctl_set_register_value(dev_fd, 0x9900000000)
+    ioctl_ack_set(dev_fd, 1)  
+
+    ioctl_close_log(dev_fd)  
+    ioctl_open_log(dev_fd) 
+
     qemu_script = Path("./../vms/qemu.sh")
 
     try:

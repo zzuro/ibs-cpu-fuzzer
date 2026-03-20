@@ -15,10 +15,13 @@ def should_remove_entry(entry: dict) -> bool:
     LOW = 0xA0000000
     HIGH = 0xA4000000
     PAGE_SIZE = 0x1000
-    msr = [0x102354630, 0x1d69ac478, 0x39671e5f0, 0x110ab6470, 0xffc04dc1, 0x398641b20]
+    msr = [0xfffffc079b87c, 0xfffffc059b87c, 0xfffffc059b87c, 0xfffffc079c95c]
 
     phys = int(entry["phys_addr"], 16)
     lin = int(entry["lin_addr"], 16)
+    uop_cnt = int(entry["uop_cnt"])
+    if uop_cnt > 1300:
+        return True
     if lin != 0:
         return True
     in_fixed_range = LOW <= phys <= HIGH
