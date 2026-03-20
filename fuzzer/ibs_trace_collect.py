@@ -18,8 +18,8 @@ import traceback
 import multiprocessing as mp
 
 
-SSD_DIR = Path("/mnt/ssd/")
-LOG_DIR = Path("/mnt/ssd/ibs_log")
+SSD_DIR = Path("/mnt/truenas/")
+LOG_DIR = Path("/mnt/truenas/ibs_log")
 IBS_PREFIX = str(LOG_DIR / "ibs_")
 IBS_SUFFIX = ".bin"
 
@@ -666,7 +666,7 @@ def main() -> int:
     ap.add_argument("--timeout", type=float, default=10.0, help="Inactivity timeout (seconds); 0 disables")
     ap.add_argument(
         "--state-file",
-        default="/mnt/ssd/ibs_log/fuzz_state.bin",
+        default="/mnt/truenas/ibs_log/fuzz_state.bin",
         help="Base path used to dump fuzz_state on timeout; per-core suffix is added",
     )
     ap.add_argument(
@@ -677,7 +677,7 @@ def main() -> int:
     ap.add_argument(
         "--save-state",
         nargs="?",
-        const="/mnt/ssd/ibs_log/fuzz_state.bin",
+        const="/mnt/truenas/ibs_log/fuzz_state.bin",
         default=None,
         help="Save fuzz state for all selected cores and exit",
     )
