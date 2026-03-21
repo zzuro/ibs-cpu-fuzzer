@@ -2881,6 +2881,12 @@ static int __maybe_unused emulate_svm_instr(struct kvm_vcpu *vcpu, int opcode)
  */
 static int gp_interception(struct kvm_vcpu *vcpu)
 {
+	
+	pr_info("[Fuzzer] Caught #GP, likely due to unsupported instruction\n");
+	u64 rip = kvm_rip_read(vcpu);
+	kvm_rip_write(vcpu, rip + 2); //skip instruction that caused #GP
+	return 1;
+	
 	if(!move_next_instruction())
 	{
 		pr_info("[Fuzzer] Finished fuzzing all instructions in the range\n");

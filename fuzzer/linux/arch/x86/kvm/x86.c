@@ -2071,7 +2071,7 @@ int kvm_emulate_wrmsr(struct kvm_vcpu *vcpu)
 		trace_kvm_msr_write_ex(ecx, data);
 	}
 done:
-	return kvm_x86_call(complete_emulated_msr)(vcpu, r);
+	return kvm_x86_call(complete_emulated_msr)(vcpu, 0);
 }
 EXPORT_SYMBOL_GPL(kvm_emulate_wrmsr);
 
