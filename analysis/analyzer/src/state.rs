@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde_json;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -12,15 +12,24 @@ pub struct AnalyzerState {
 }
 
 impl AnalyzerState {
-    pub fn load(path: &Path) -> Result<Self> {
-        if !path.exists() {
-            return Ok(Self::default());
-        }
-
-        let content = fs::read_to_string(path)?;
-        let state = serde_json::from_str(&content)?;
-        Ok(state)
+    
+pub fn load(path: &Path) -> Result<Self> {
+    if !path.exists() {
+        return Ok(Self::default());
     }
+
+    let content = fs::read_to_string(path)
+        .with_context(|| format!("reading state file {}", path.display()))?;
+
+    if content.trim().is_empty() {
+        return Ok(Self::default());
+    }
+
+    let state = serde_json::from_str(&content)
+        .with_context(|| format!("parsing state file {}", path.display()))?;
+
+    Ok(state)
+}
 
 pub fn save(&self, path: &Path) -> Result<()> {
     if let Some(parent) = path.parent() {

@@ -145,7 +145,7 @@ fn process_chunk(
             Ok(Some(finding)) => {
                 write_finding(&findings_dir, &finding)
                     .with_context(|| format!("writing finding for {}", file.display()))?;
-
+                println!("Worker {}: Found suspicious pattern in {}", worker_idx, file.display());
                 state.mark_processed(&file);
                 state.save(&state_file)
                     .with_context(|| format!("saving state file {}", state_file.display()))?;
