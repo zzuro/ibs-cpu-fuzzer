@@ -65,3 +65,52 @@ void map_physical_to_virtual(unsigned long phys_addr, unsigned long virt_addr) {
     // Flush TLB
     asm volatile("invlpg (%0)" ::"r"(virt_addr) : "memory");
 }
+
+void map_physical_to_virtual_4lvl(unsigned long phys_addr, unsigned long virt_addr)
+{
+    unsigned long *pml4, *pdp, *pd, *pt;
+    unsigned long index4, index3, index2, index1;
+    unsigned long new_page;
+
+    /* CR3 points to PML4 in 4-level paging */
+    pml4 = (unsigned long *)phys_to_virt(read_cr3() & PAGE_MASK);
+
+    index4 = (virt_addr >> 39) & 0x1FF;
+    index3 = (virt_addr >> 30) & 0x1FF;
+    index2 = (virt_addr >> 21) & 0x1FF;
+    index1 = (virt_addr >> 12) & 0x1FF;
+
+    if (!(pml4[index4] & PAGE_PRESENT)) {
+        new_page = __get_free_page(GFP_KERNEL);
+        if (!new_page)
+            return;
+        memset((void *)new_page, 0, PAGE_SIZE);
+        pml4[index4] = virt_to_phys((void *)new_page) | PAGE_PRESENT | PAGE_RW;
+    }
+
+    pdp = (unsigned long *)phys_to_virt(pml4[index4] & PAGE_MASK);
+
+    if (!(pdp[index3] & PAGE_PRESENT)) {
+        new_page = __get_free_page(GFP_KERNEL);
+        if (!new_page)
+            return;
+        memset((void *)new_page, 0, PAGE_SIZE);
+        pdp[index3] = virt_to_phys((void *)new_page) | PAGE_PRESENT | PAGE_RW;
+    }
+
+    pd = (unsigned long *)phys_to_virt(pdp[index3] & PAGE_MASK);
+
+    if (!(pd[index2] & PAGE_PRESENT)) {
+        new_page = __get_free_page(GFP_KERNEL);
+        if (!new_page)
+            return;
+        memset((void *)new_page, 0, PAGE_SIZE);
+        pd[index2] = virt_to_phys((void *)new_page) | PAGE_PRESENT | PAGE_RW;
+    }
+
+    pt = (unsigned long *)phys_to_virt(pd[index2] & PAGE_MASK);
+
+    pt[index1] = (phys_addr & PAGE_MASK) | PAGE_PRESENT | PAGE_RW | NX_BIT;
+
+    asm volatile("invlpg (%0)" :: "r"(virt_addr) : "memory");
+}

@@ -52,18 +52,31 @@ static inline void insd_rep(void *dst, uint64_t port, size_t count)
     );
 }
 
-static inline void insd_once(void *dst, uint16_t port)
+static inline void outsd_once(const void *src, uint16_t port)
 {
     asm volatile(
-        "insl"
-        : "+D"(dst)     
-        : "d"(port)     
+        "outsl"
+        : "+S"(src)     // RSI updated (src += 4)
+        : "d"(port)     // DX = port
         : "memory"
     );
 }
 
+static inline uint32_t inl(uint16_t port)
+{
+    uint32_t value;
+    asm volatile(
+        "inl %1, %0"
+        : "=a"(value)
+        : "d"(port)
+    );
+    return value;
+}
 
-
+static inline void outw(uint16_t port, uint16_t value)
+{
+    asm volatile("outw %0, %1" :: "a"(value), "d"(port));
+}
 
 void __attribute__((noreturn)) kernel_main(void);
 
@@ -305,9 +318,6 @@ void __attribute__((noreturn)) kernel_main(void)
     ACCESS_ONCE(*((uint64_t*)BASE + 5));
     ACCESS_ONCE(*((uint64_t*)BASE + 6));
     ACCESS_ONCE(*((uint64_t*)BASE + 7));
-
-    insd_rep((void*)0x305000, 0xFFFFF, 0x20); 
-    //insd_once((void*)0x305000, 0x80);
     
     asm volatile(
         "jmp *(%0) \n\t" 

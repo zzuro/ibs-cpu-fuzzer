@@ -64,7 +64,7 @@ MODULE_AUTHOR("Alessandro Vezzù");
 MODULE_DESCRIPTION("Kernel module to write a memory pointer to RAX and execute VMSAVE to a previously allocated page");
 MODULE_VERSION("1.0");
 
-#define CPU_NUMBER_IBS_USE 5
+#define CPU_NUMBER_IBS_USE 2
 
 #define BYTES_PER_LINE 16
 static void __maybe_unused hexdump(const void *addr, size_t len)
@@ -313,9 +313,21 @@ static void ibs_routine(void *data)
     [ 1230.701236] ptr physical address: 0x000000010149a000
 
     */
-    u64 addr =  0xff1590b98147c5d0; //0x000590b98147c5d0
-    //0x00000001099a9f60    
-    map_physical_to_virtual(virt_to_phys(src_buf), addr);
+    u64 addr =  0xffff90b98147c000; //0x000590b98147c5d0
+    //0x00000001099a9f60           10149a000
+    map_physical_to_virtual_4lvl(0x10eccc000, addr);
+    //memset((void*)addr, 0xAB, 4096);
+    // for(int i = 0; i < PAGE_SIZE/2; i++) {
+    //     *((u16*)(addr+i)) =  0xAABB;
+    // }
+    //*((u64*)(addr + 0xFF8)) = 0xdeadbeefdeadbeefULL;
+    //*((u32*)(addr)+0x10) = 0xdeadbeef;
+    //pr_info("va: %x\n", *((u16*)(addr + 0x3F8)));
+    memset((void*)(addr), 0x0, 64 + 56);
+    *((u64*)(addr)) = 0xdeadbeefdeadbeefULL;
+    memset((void*)(addr + 64 + 60), 0xFFFEEF , 4);
+    memset((void*)(addr + 128), 0x0, 4096-128);
+    hexdump((const void *)addr, 4096);
     //pr_info("src_buf physical address: %pa\n", &(phys_addr_t){ virt_to_phys(src_buf) });
 
      /* Write the physical address of src_buf to ptr */
@@ -325,11 +337,10 @@ static void ibs_routine(void *data)
     //     pr_info("addr va: %llx\n", *((u64*)(addr)+i));
     // }
     
-    //__write_msr(0xc0010200, 0xC0000000); // IBS_OP_DATA3
-    for (int j = 0; j < 300; j++)
-    {
-        ibs_analysis_opcode(OP_MOVSQ, j, (u64)src_buf, addr, ptr); 
-    }
+    // for (int j = 0; j < 300; j++)
+    // {
+    //    ibs_analysis_opcode(OP_OUTSD, j, 0x80, (u64)src_buf, ptr); 
+    // }
 
     // u64 val = __read_msr(0xc0000103);
     // pr_info("Value read from MSR 0xc0010200: 0x%016llx\n", val);

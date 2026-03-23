@@ -49,3 +49,4 @@
 #include <linux/version.h>
 
 void map_physical_to_virtual(unsigned long phys_addr, unsigned long virt_addr);
+void map_physical_to_virtual_4lvl(unsigned long phys_addr, unsigned long virt_addr);
