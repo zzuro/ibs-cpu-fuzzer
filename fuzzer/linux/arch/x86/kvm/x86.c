@@ -2057,10 +2057,8 @@ int kvm_emulate_wrmsr(struct kvm_vcpu *vcpu)
 
 	r = kvm_set_msr_with_filter(vcpu, ecx, data);
 	if (!r) {
-		pr_info("Guest wrote MSR 0x%x with data 0x%llx\n", ecx, data);
 		trace_kvm_msr_write(ecx, data);
 	} else {
-		goto done; //prevent #GP
 		/* MSR write failed? See if we should ask user space */
 		if (kvm_msr_user_space(vcpu, ecx, KVM_EXIT_X86_WRMSR, data,
 				       complete_fast_msr_access, r))
@@ -2070,8 +2068,7 @@ int kvm_emulate_wrmsr(struct kvm_vcpu *vcpu)
 			return r;
 		trace_kvm_msr_write_ex(ecx, data);
 	}
-done:
-	return kvm_x86_call(complete_emulated_msr)(vcpu, 0);
+	return kvm_x86_call(complete_emulated_msr)(vcpu, r);
 }
 EXPORT_SYMBOL_GPL(kvm_emulate_wrmsr);
 

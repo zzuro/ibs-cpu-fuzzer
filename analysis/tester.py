@@ -394,7 +394,7 @@ def main() -> int:
     # with first_file.open() as f:
     #     data = json.load(f) 
 
-    instr = extract_bytes("/mnt/ssd/ibs_log/ibs_\\x03\\x04\\x9d\\x9d\\x00\\x00\\x00.bin")
+    instr = extract_bytes("/mnt/ssd/ibs_log/ibs_\\x01\\x14\\x6d\\x1e\\x00\\x00\\x00.bin")
     print(f"Testing instruction: {instr.hex()}")
     st = set_instruction(instr, len(instr))
     set_global_state(dev_fd)

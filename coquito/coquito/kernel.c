@@ -41,17 +41,28 @@ static void init_data_bss(void)
         *p++ = 0;
 }
 
-//To fuzz MSRs,
-static void __write_msr(uint32_t msr_register, uint64_t msr_value) {
-    uint32_t low = (uint32_t)msr_value;
-    uint32_t high = (uint32_t)(msr_value >> 32);
 
+static inline void insd_rep(void *dst, uint64_t port, size_t count)
+{
     asm volatile(
-        "wrmsr"
-        :                                         // No output operands
-        : "c"(msr_register), "a"(low), "d"(high)  // Input operands
+        "rep insl"
+        : "+D"(dst), "+c"(count)
+        : "d"(port)     
+        : "memory"
     );
 }
+
+static inline void insd_once(void *dst, uint16_t port)
+{
+    asm volatile(
+        "insl"
+        : "+D"(dst)     
+        : "d"(port)     
+        : "memory"
+    );
+}
+
+
 
 
 void __attribute__((noreturn)) kernel_main(void);
@@ -275,39 +286,36 @@ void __attribute__((noreturn)) kernel_main(void)
     pte_300->xd = 0; // Mark the page as executable
     pte_301->xd = 1; // Mark the page as non-executable
 
-    // // capture VM state here
-    // asm volatile(
-    //     "mov %0, %%rax\n\t"
-    //     "mov %1, %%rdi\n\t"
-    //     "ud2\n\t"
-    //     :
-    //     : "i"(BASE), "r"(MAGIC_VALUE)
-    //     : "rax", "rdi");
+    // capture VM state here
+    asm volatile(
+        "mov %0, %%rax\n\t"
+        "mov %1, %%rdi\n\t"
+        "ud2\n\t"
+        :
+        : "i"(BASE), "r"(MAGIC_VALUE)
+        : "rax", "rdi");
 
 
-    // // //sanity check, check log if loads are visible
-    // ACCESS_ONCE(*(uint64_t*)BASE);
-    // ACCESS_ONCE(*((uint64_t*)BASE + 1));
-    // ACCESS_ONCE(*((uint64_t*)BASE + 2));
-    // ACCESS_ONCE(*((uint64_t*)BASE + 3));
-    // ACCESS_ONCE(*((uint64_t*)BASE + 4));
-    // ACCESS_ONCE(*((uint64_t*)BASE + 5));
-    // ACCESS_ONCE(*((uint64_t*)BASE + 6));
-    // ACCESS_ONCE(*((uint64_t*)BASE + 7));
+    // //sanity check, check log if loads are visible
+    ACCESS_ONCE(*(uint64_t*)BASE);
+    ACCESS_ONCE(*((uint64_t*)BASE + 1));
+    ACCESS_ONCE(*((uint64_t*)BASE + 2));
+    ACCESS_ONCE(*((uint64_t*)BASE + 3));
+    ACCESS_ONCE(*((uint64_t*)BASE + 4));
+    ACCESS_ONCE(*((uint64_t*)BASE + 5));
+    ACCESS_ONCE(*((uint64_t*)BASE + 6));
+    ACCESS_ONCE(*((uint64_t*)BASE + 7));
+
+    insd_rep((void*)0x305000, 0xFFFFF, 0x20); 
+    //insd_once((void*)0x305000, 0x80);
     
-    // asm volatile(
-    //     "jmp *(%0) \n\t" 
-    //     :
-    //     : "r"(BASE)
-    //     : "memory");
+    asm volatile(
+        "jmp *(%0) \n\t" 
+        :
+        : "r"(BASE)
+        : "memory");
 
-                     
-    for(uint64_t i = 0xC0000000; i < 0xCFFFFFFF; i+=8) {
-        __write_msr(i, 0xC0000000);
-    }
-    
-    serial_puts("Finished writing MSRs, now idling...\n");
-    //serial_puts("idling...\n");
+    serial_puts("idling...\n");
     while (true)
     {
         asm volatile("hlt");
