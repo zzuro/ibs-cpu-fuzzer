@@ -116,6 +116,51 @@ static __always_inline void __write_msr(uint32_t msr_register, uint64_t msr_valu
     );
 }
 
+static __always_inline uint64_t measure_access_time(const uint8_t *addr)
+{
+    uint32_t lo_start, hi_start;
+    uint32_t lo_end, hi_end;
+    uint32_t aux;
+    volatile uint8_t value;
+    preempt_disable();
+    /*
+     * Serialize earlier memory ops before timing.
+     * mfence is conservative; lfence is the key one for load timing.
+     */
+    asm volatile("mfence\n\t"
+                 "lfence\n\t"
+                 ::: "memory");
+
+    /* Read starting timestamp */
+    asm volatile("rdtscp\n\t"
+                 : "=a"(lo_start), "=d"(hi_start), "=c"(aux)
+                 :
+                 : "memory");
+
+    /* Prevent later ops from executing early */
+    asm volatile("lfence\n\t" ::: "memory");
+
+    /* Timed load */
+    asm volatile("movb (%1), %0\n\t"
+                 : "=r"(value)
+                 : "r"(addr)
+                 : "memory");
+
+    /* Ensure load completes before reading end timestamp */
+    asm volatile("lfence\n\t" ::: "memory");
+
+    /* Read ending timestamp */
+    asm volatile("rdtscp\n\t"
+                 : "=a"(lo_end), "=d"(hi_end), "=c"(aux)
+                 :
+                 : "memory");
+
+    asm volatile("mfence\n\t" ::: "memory");
+    preempt_enable();
+    return (((uint64_t)hi_end << 32) | lo_end) -
+           (((uint64_t)hi_start << 32) | lo_start);
+}
+
 typedef union ibs_opt_ctrl
 {
     struct
@@ -207,10 +252,10 @@ static void __maybe_unused noinline read_ibs_ctrl(u64 uop_cnt, u64 rip_out)
     ibs_opt_ctrl ibs_op_ctl_data;
     ibs_op_ctl_data.value = __read_msr(IBS_OP_CTL);
 
-    // if (ibs_op_ctl_data.IbsOpValid == 0)
-    // {
-    //     return;
-    // }
+    if (ibs_op_ctl_data.IbsOpValid == 0)
+    {
+        return;
+    }
 
     u64 rip_value;
     rip_value = __read_msr(IBS_OP_RIP);
@@ -245,6 +290,112 @@ static void __maybe_unused noinline read_ibs_ctrl(u64 uop_cnt, u64 rip_out)
     __write_msr(IBS_OP_RIP, 0);
     __write_msr(BP_IBSTGT_RIP, 0);
 }
+
+struct gpr_state {
+    uint64_t rax, rbx, rcx, rdx;
+    uint64_t rsi, rdi, rbp, rsp;
+    uint64_t r8,  r9,  r10, r11;
+    uint64_t r12, r13, r14, r15;
+};
+
+static inline void read_gprs(struct gpr_state *out)
+{
+    __asm__ volatile (
+        "mov %%rax, 0(%0)\n\t"
+        "mov %%rbx, 8(%0)\n\t"
+        "mov %%rcx, 16(%0)\n\t"
+        "mov %%rdx, 24(%0)\n\t"
+        "mov %%rsi, 32(%0)\n\t"
+        "mov %%rdi, 40(%0)\n\t"
+        "mov %%rbp, 48(%0)\n\t"
+        "mov %%rsp, 56(%0)\n\t"
+        "mov %%r8,  64(%0)\n\t"
+        "mov %%r9,  72(%0)\n\t"
+        "mov %%r10, 80(%0)\n\t"
+        "mov %%r11, 88(%0)\n\t"
+        "mov %%r12, 96(%0)\n\t"
+        "mov %%r13, 104(%0)\n\t"
+        "mov %%r14, 112(%0)\n\t"
+        "mov %%r15, 120(%0)\n\t"
+        :
+        : "r"(out)
+        : "memory"
+    );
+}
+
+void dump_gprs(void)
+{
+    struct gpr_state r;
+    read_gprs(&r);
+
+    pr_info("RAX=%016lx RBX=%016lx RCX=%016lx RDX=%016lx\n", r.rax, r.rbx, r.rcx, r.rdx);
+    pr_info("RSI=%016lx RDI=%016lx RBP=%016lx RSP=%016lx\n", r.rsi, r.rdi, r.rbp, r.rsp);
+    pr_info("R8 =%016lx R9 =%016lx R10=%016lx R11=%016lx\n", r.r8,  r.r9,  r.r10, r.r11);
+    pr_info("R12=%016lx R13=%016lx R14=%016lx R15=%016lx\n", r.r12, r.r13, r.r14, r.r15);
+}
+
+static inline int repe_scasq(const void *src, uint64_t value, size_t count)
+{
+    unsigned char zf;
+    __asm__ volatile (
+        "rep scasq\n\t"
+        "setz %0"
+        : "=q"(zf), "+D"(src), "+c"(count)
+        : "a"(value)
+        : "memory"
+    );
+    return zf;
+}
+
+
+static inline int repe_cmpsb(const void *s1, const void *s2, size_t count)
+{
+    unsigned char zf;
+    __asm__ volatile (
+        "rep cmpsb\n\t"
+        "setz %0"
+        : "=q"(zf), "+S"(s1), "+D"(s2), "+c"(count)
+        :
+        : "memory"
+    );
+    return zf;
+}
+
+static inline void rep_stosq(void *dst, uint64_t value, size_t count)
+{
+    __asm__ volatile (
+        "rep stosq"
+        : "+D"(dst), "+c"(count)
+        : "a"(value)
+        : "memory"
+    );
+}
+
+static inline void rep_movsq(void *dst, const void *src, size_t count)
+{
+    __asm__ volatile (
+        "rep movsb"
+        :
+        : "D"(dst), "S"(src), "c"(count)
+        : "memory"
+    );
+}
+
+static inline uint64_t rep_lodsq(const void *src, size_t count)
+{
+    uint64_t value = 0x0;
+    __asm__ volatile (
+        "rep lodsq"
+        : "+S"(src), "+c"(count), "=a"(value)
+        :
+        : "memory"
+    );
+    return value;
+}
+
+
+
+//0xffff90b98147c000
 
 static void ibs_analysis_opcode(enum opcode_id id, u64 location,
                                 u64 arg0, u64 arg1, u8 *ptr)
@@ -282,6 +433,20 @@ static void ibs_analysis_opcode(enum opcode_id id, u64 location,
 }
 
 
+static inline void flush_tlb(void)
+{
+    uintptr_t cr3;
+    __asm__ volatile ("mov %%cr3, %0" : "=r"(cr3));
+    __asm__ volatile ("mov %0, %%cr3" : : "r"(cr3) : "memory");
+}
+
+static __always_inline void flush_cache_line_fenced(const void *addr)
+{
+    asm volatile("mfence\n\t" ::: "memory");
+    asm volatile("clflush (%0)\n\t" : : "r"(addr) : "memory");
+    asm volatile("mfence\n\t" ::: "memory");
+}
+
 static void ibs_routine(void *data)
 {
     pr_info("IBS routine called on CPU %d\n", smp_processor_id());
@@ -313,9 +478,20 @@ static void ibs_routine(void *data)
     [ 1230.701236] ptr physical address: 0x000000010149a000
 
     */
-    u64 addr =  0xffff90b98147c000; //0x000590b98147c5d0
+    u64 addr =  0xff1590b98147c000; //0x000590b98147c5d0
+    u64 addr2 = 0xffff90b98147c000;
     //0x00000001099a9f60           10149a000
-    map_physical_to_virtual_4lvl(0x10eccc000, addr);
+    map_physical_to_virtual(0x10eccc000 , addr);
+    map_physical_to_virtual(0x42eccc000 , addr + 0x1000);
+    map_physical_to_virtual(0x51eccc000, addr2);
+    memset((void*)src_buf, 0xCC, 4096);
+    memset((void*)addr2, 0x0, 4096);
+    memset((void*)addr, 0, 4096);
+    //*(u64*)(addr + 0xFFD) = 0xCCCCCCCCCCCCCCCCULL;
+    //*(u64*)(addr2) = 0xDDDDDDDDDDDDDDDDULL;
+
+    pr_info("src_buf va: %llx\n", *((u64*)(src_buf)));
+
     //memset((void*)addr, 0xAB, 4096);
     // for(int i = 0; i < PAGE_SIZE/2; i++) {
     //     *((u16*)(addr+i)) =  0xAABB;
@@ -323,11 +499,11 @@ static void ibs_routine(void *data)
     //*((u64*)(addr + 0xFF8)) = 0xdeadbeefdeadbeefULL;
     //*((u32*)(addr)+0x10) = 0xdeadbeef;
     //pr_info("va: %x\n", *((u16*)(addr + 0x3F8)));
-    memset((void*)(addr), 0x0, 64 + 56);
-    *((u64*)(addr)) = 0xdeadbeefdeadbeefULL;
-    memset((void*)(addr + 64 + 60), 0xFFFEEF , 4);
-    memset((void*)(addr + 128), 0x0, 4096-128);
-    hexdump((const void *)addr, 4096);
+    // memset((void*)(addr), 0x0, 64 + 56);
+    // *((u64*)(addr)) = 0xdeadbeefdeadbeefULL;
+    // memset((void*)(addr + 64 + 60), 0xFFFEEF , 4);
+    // memset((void*)(addr + 128), 0x0, 4096-128);
+    // hexdump((const void *)addr, 4096);
     //pr_info("src_buf physical address: %pa\n", &(phys_addr_t){ virt_to_phys(src_buf) });
 
      /* Write the physical address of src_buf to ptr */
@@ -336,15 +512,25 @@ static void ibs_routine(void *data)
     //     *((u64*)(addr)+i) = 0xdeadbeefdeadbeefULL;
     //     pr_info("addr va: %llx\n", *((u64*)(addr)+i));
     // }
-    
-    // for (int j = 0; j < 300; j++)
-    // {
-    //    ibs_analysis_opcode(OP_OUTSD, j, 0x80, (u64)src_buf, ptr); 
-    // }
+    // flush_tlb();
+    // flush_cache_line_fenced((void*)addr2);
+    // uint64_t access_time = measure_access_time((const uint8_t*)addr2);
+    // pr_info("Access time for addr2: %lu cycles\n", access_time);
+    flush_cache_line_fenced((void*)addr);
+    for (int j = 0; j < 200; j++)
+    {
+       ibs_analysis_opcode(OP_VMSAVE, j, 0x10eccc000, 0, ptr); 
+    }
 
+    // access_time = measure_access_time((const uint8_t*)addr2);
+    // pr_info("Access time for addr2: %lu cycles\n", access_time);
+
+
+    //pr_info("src_buf va: %llx\n", *((u64*)(src_buf)));
+    //__asm__ volatile("clflushopt (%0)" : : "r"(addr2) : "memory");
+    //hexdump((const void *)( addr + 0xFED), 64);
     // u64 val = __read_msr(0xc0000103);
     // pr_info("Value read from MSR 0xc0010200: 0x%016llx\n", val);
-
     kfree(src_buf);
     kfree(ptr);
 

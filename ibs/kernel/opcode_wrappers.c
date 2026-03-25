@@ -219,7 +219,7 @@ int fn_name(u64 arg0, u64 arg1, struct opcode_result *out)                    \
     asm volatile(                                                             \
         "mov %[buf], %%rdi\n\t"                                               \
         "mov %[port], %%edx\n\t"                                               \
-        "movl $5, %%ecx\n\t"                                               \
+        "movl $7, %%ecx\n\t"                                               \
         "movl $0, %[rc]\n\t"                                                  \
         "movl $-1, %[vec]\n\t"                                                \
         "leaq 1f(%%rip), %[rip]\n\t"                                          \
@@ -464,7 +464,7 @@ int fn_name(u64 src, u64 dst, u64 count, struct opcode_result *out)             
         "mov %[dst], %%rdi\n\t"                                                   \
         "mov %[count], %%rcx\n\t"                                                 \
         "leaq 1f(%%rip), %[rip]\n\t"                                              \
-        "1: rex.rxb rep movsq\n\t"                                                        \
+        "1: rep movsq\n\t"                                                        \
         "2:\n\t"                                                                  \
         ".section .fixup,\"ax\"\n\t"                                              \
         "3:\n\t"                                                                  \
@@ -608,6 +608,7 @@ struct opcode_desc opcode_table[] = {
     OPENTRY(OP_READ_CR3, true, false, false),
     OPENTRY(OP_READ_CR4, true, false, false),
     OPENTRY(OP_RDMSR, true, true, false),
+    OPENTRY(OP_CUSTOM1, true, true, true),
     {}
 };
 
@@ -644,7 +645,7 @@ DEFINE_OPCODE_WRAPPER_MEMARG0(try_invlpg, "invlpg %[mem]")
 
 DEFINE_OPCODE_WRAPPER_WRMSR(do_wrmsr);
 
-DEFINE_OPCODE_WRAPPER_RAX(try_vmsave, ".byte 0x0f, 0x01, 0xdb")
+DEFINE_OPCODE_WRAPPER_RAX(try_vmsave, "vmsave %%rax")
 DEFINE_OPCODE_WRAPPER_REP_MOVSQ(test_rep_movsq);
 
 DEFINE_OPCODE_WRAPPER_MEMARG0(try_sidt, "sidt %[mem]")
@@ -716,7 +717,7 @@ int run_selected_opcode(enum opcode_id id, u64 arg0, u64 arg1,
     case OP_VMSAVE:
         return try_vmsave(arg0, arg1, out);
     case OP_MOVSQ:
-        return test_rep_movsq(arg0, arg1, 5, out);
+        return test_rep_movsq(arg0, arg1, 8, out);
     case OP_SIDT:
         return try_sidt(arg0, arg1, out);
     case OP_SGDT:

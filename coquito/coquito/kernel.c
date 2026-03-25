@@ -42,41 +42,6 @@ static void init_data_bss(void)
 }
 
 
-static inline void insd_rep(void *dst, uint64_t port, size_t count)
-{
-    asm volatile(
-        "rep insl"
-        : "+D"(dst), "+c"(count)
-        : "d"(port)     
-        : "memory"
-    );
-}
-
-static inline void outsd_once(const void *src, uint16_t port)
-{
-    asm volatile(
-        "outsl"
-        : "+S"(src)     // RSI updated (src += 4)
-        : "d"(port)     // DX = port
-        : "memory"
-    );
-}
-
-static inline uint32_t inl(uint16_t port)
-{
-    uint32_t value;
-    asm volatile(
-        "inl %1, %0"
-        : "=a"(value)
-        : "d"(port)
-    );
-    return value;
-}
-
-static inline void outw(uint16_t port, uint16_t value)
-{
-    asm volatile("outw %0, %1" :: "a"(value), "d"(port));
-}
 
 void __attribute__((noreturn)) kernel_main(void);
 
