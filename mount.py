@@ -39,12 +39,12 @@ cpu_model = get_cpu_model()
 
 # 3. mount local SSD
 if "AMD EPYC 7313 16-Core Processor" in cpu_model:
-    subprocess.run([
+    run([
         "sudo",
         "mount",
         "/dev/sda2",
         "/mnt/ssd/"
-    ], check=True)
+    ])
 
 # 4. mount truenas via sshfs
 if "AMD EPYC 7313 16-Core Processor" in cpu_model:
@@ -55,6 +55,7 @@ if "AMD EPYC 7313 16-Core Processor" in cpu_model:
         "project01@cave.inf.ethz.ch:/mnt/SECTRS_POOL_0/USERDATA/BENEDICT/PROJECT_IBS",
         "/mnt/truenas"
     ], PASSWORD)
+
 elif "AMD EPYC 9124 16-Core Processor" in cpu_model:
     run([
     "sudo",
@@ -62,6 +63,6 @@ elif "AMD EPYC 9124 16-Core Processor" in cpu_model:
     "-t", "nfs",
     "cave.inf.ethz.ch:/mnt/SECTRS_POOL_0/USERDATA/BENEDICT/PROJECT_IBS",
     "/mnt/truenas"
-])
+    ])
 
 print("All mounts completed.")
