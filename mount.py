@@ -46,14 +46,22 @@ if "AMD EPYC 7313 16-Core Processor" in cpu_model:
         "/mnt/ssd/"
     ], check=True)
 
-    
 # 4. mount truenas via sshfs
-run([
+if "AMD EPYC 7313 16-Core Processor" in cpu_model:
+    run([
+        "sudo",
+        "sshfs",
+        "-o", "password_stdin",
+        "project01@cave.inf.ethz.ch:/mnt/SECTRS_POOL_0/USERDATA/BENEDICT/PROJECT_IBS",
+        "/mnt/truenas"
+    ], PASSWORD)
+elif "AMD EPYC 9124 16-Core Processor" in cpu_model:
+    run([
     "sudo",
-    "sshfs",
-    "-o", "password_stdin",
-    "project01@cave.inf.ethz.ch:/mnt/SECTRS_POOL_0/USERDATA/BENEDICT/PROJECT_IBS",
+    "mount",
+    "-t", "nfs",
+    "cave.inf.ethz.ch:/mnt/SECTRS_POOL_0/USERDATA/BENEDICT/PROJECT_IBS",
     "/mnt/truenas"
-], PASSWORD)
+])
 
 print("All mounts completed.")

@@ -18,13 +18,10 @@ import traceback
 import multiprocessing as mp
 
 
-SSD_DIR = Path("/mnt/ssd/")
-LOG_DIR = Path("/mnt/ssd/ibs_log")
+SSD_DIR = Path("/mnt/truenas/")
+LOG_DIR = Path("/mnt/truenas/ibs_log")
 IBS_PREFIX = str(LOG_DIR / "ibs_")
 IBS_SUFFIX = ".bin"
-
-TRUENAS_DIR = Path("/mnt/truenas/")
-TRUENAS_LOG_DIR = TRUENAS_DIR / "ibs_log"
 
 DEVICE_NAME = "/dev/svm_ibs_dev"
 MAX_INSN_LENGTH = 15
@@ -34,10 +31,6 @@ POLL_SLEEP_SEC = 0.05
 BIN_BUFFER_SIZE = 1024 * 1024
 
 SNAPSHOT_TIMEOUT = 60 * 10  # Save a snapshot every 10 minutes
-MIN_FREE_SPACE_BYTES = 10 * 1024**3
-
-ROLLOVER_WAIT_SEC = 30.0
-ROLLOVER_POLL_SEC = 0.05
 
 FUZZ_IOC_GET_STATE = _IOR(ord('a'), ord('c'), FuzzerState)
 FUZZ_IOC_SET_STATE = _IOW(ord('a'), ord('d'), FuzzerState)
@@ -51,31 +44,16 @@ FUZZ_IOC_ACK_SET = _IOW(ord('a'), ord('l'), ctypes.c_uint64)
 
 stop_event = None
 print_lock = None
-pause_event = None
-paused_workers = None
-num_workers = None
-rollover_lock = None
 
 
 # ----------------------------
 # Process-global initialization
 # ----------------------------
 
-def init_process_globals(
-    shared_stop_event,
-    shared_print_lock,
-    shared_pause_event,
-    shared_paused_workers,
-    shared_num_workers,
-    shared_rollover_lock,
-):
-    global stop_event, print_lock, pause_event, paused_workers, num_workers, rollover_lock
+def init_process_globals(shared_stop_event, shared_print_lock):
+    global stop_event, print_lock
     stop_event = shared_stop_event
     print_lock = shared_print_lock
-    pause_event = shared_pause_event
-    paused_workers = shared_paused_workers
-    num_workers = shared_num_workers
-    rollover_lock = shared_rollover_lock
 
 
 # ----------------------------
@@ -104,9 +82,6 @@ def ts_print_exc():
 def check_ssd_mounted() -> bool:
     return SSD_DIR.is_dir() and os.access(SSD_DIR, os.W_OK)
 
-def check_truenas_mounted() -> bool:
-    return TRUENAS_DIR.is_dir() and os.access(TRUENAS_DIR, os.W_OK)
-
 def reset_log_directory():
     if LOG_DIR.exists():
         shutil.rmtree(LOG_DIR)
@@ -130,17 +105,9 @@ def create_log_directory_if_missing():
     if not LOG_DIR.exists():
         LOG_DIR.mkdir(parents=True, exist_ok=True)
 
-def ensure_truenas_log_dir():
-    if not check_truenas_mounted():
-        raise RuntimeError(f"TrueNAS directory {TRUENAS_DIR} is not mounted or writable")
-    TRUENAS_LOG_DIR.mkdir(parents=True, exist_ok=True)
-
-def get_free_space_bytes(path: Path) -> int:
-    _, _, free = shutil.disk_usage(path)
-    return free
-
 def check_disk_space():
-    return get_free_space_bytes(SSD_DIR) >= MIN_FREE_SPACE_BYTES
+    _, _, free = shutil.disk_usage(SSD_DIR)
+    return free >= 10 * 1024**3
 
 def generate_filename(insn_bytes: bytes) -> str:
     encoded = "".join(f"\\x{b:02x}" for b in insn_bytes)
@@ -168,48 +135,6 @@ def read_exact_or_none(f, n: int) -> bytes | None:
         total += len(chunk)
 
     return b"".join(chunks)
-
-def get_ssd_log_bytes() -> int:
-    if not LOG_DIR.exists():
-        return 0
-    total = 0
-    for entry in LOG_DIR.iterdir():
-        if entry.is_file():
-            try:
-                total += entry.stat().st_size
-            except FileNotFoundError:
-                pass
-    return total
-
-def ensure_truenas_has_space_for_rollover() -> None:
-    ensure_truenas_log_dir()
-    needed = get_ssd_log_bytes()
-    free = get_free_space_bytes(TRUENAS_DIR)
-    if free < needed:
-        raise RuntimeError(
-            f"TrueNAS full or insufficient space for rollover: need {needed} bytes, have {free} bytes free"
-        )
-
-def move_ssd_logs_to_truenas() -> None:
-    if not check_ssd_mounted():
-        raise RuntimeError(f"SSD directory {SSD_DIR} is not mounted or writable")
-    if not LOG_DIR.exists():
-        LOG_DIR.mkdir(parents=True, exist_ok=True)
-
-    ensure_truenas_log_dir()
-    ensure_truenas_has_space_for_rollover()
-
-    for entry in LOG_DIR.iterdir():
-        if not entry.is_file() or entry.name.startswith("fuzz_state"):
-            continue
-        src = entry
-        dst = TRUENAS_LOG_DIR / entry.name
-        if not dst.exists():
-            shutil.move(str(src), str(dst))
-        else:
-            shutil.remove(str(src))
-
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 
 # ----------------------------
@@ -432,71 +357,6 @@ def kill_qemu(proc: subprocess.Popen, sig=signal.SIGTERM, grace_sec: float = 2.0
 
 
 # ----------------------------
-# Rollover helpers
-# ----------------------------
-
-def worker_pause_for_rollover(core_id: int, out):
-    counted = False
-
-    if out is not None:
-        try:
-            out.flush()
-        except Exception:
-            pass
-        try:
-            out.close()
-        except Exception:
-            pass
-        out = None
-
-    try:
-        with paused_workers.get_lock():
-            paused_workers.value += 1
-            counted = True
-
-        ts_print(f"[core {core_id}] Paused for SSD log rollover", file=sys.stderr)
-
-        while pause_event.is_set() and not stop_event.is_set():
-            time.sleep(ROLLOVER_POLL_SEC)
-
-        ts_print(f"[core {core_id}] Resuming after SSD log rollover", file=sys.stderr)
-        return out
-    finally:
-        if counted:
-            with paused_workers.get_lock():
-                paused_workers.value -= 1
-
-def perform_log_rollover_from_parent() -> bool:
-    with rollover_lock:
-        pause_event.set()
-
-        deadline = time.monotonic() + ROLLOVER_WAIT_SEC
-        while time.monotonic() < deadline:
-            with paused_workers.get_lock():
-                if paused_workers.value >= num_workers.value:
-                    break
-            time.sleep(ROLLOVER_POLL_SEC)
-        else:
-            ts_print(
-                "ERROR: timed out waiting for all workers to pause for rollover",
-                file=sys.stderr,
-            )
-            pause_event.clear()
-            return False
-
-        try:
-            move_ssd_logs_to_truenas()
-            ts_print(f"Moved SSD logs to {TRUENAS_LOG_DIR}", file=sys.stderr)
-            return True
-        except Exception as e:
-            ts_print(f"ERROR: log rollover failed: {e}", file=sys.stderr)
-            ts_print_exc()
-            return False
-        finally:
-            pause_event.clear()
-
-
-# ----------------------------
 # Main per-core trace loop
 # ----------------------------
 
@@ -542,12 +402,6 @@ def trace_loop_with_timeout(
     try:
         while not stop_event.is_set():
             now = time.monotonic()
-
-            if pause_event.is_set():
-                out = worker_pause_for_rollover(core_id, out)
-                current_insn_bytes = None
-                last_received = time.monotonic()
-                continue
 
             if inactivity_timeout > 0 and (now - last_received >= inactivity_timeout):
                 try:
@@ -653,12 +507,18 @@ def trace_loop_with_timeout(
                 )
                 continue
 
-            if hdr.record_type == IBS_REC_FINISH:
+            if hdr.record_type == IBS_REC_FINISH or not check_disk_space():
                 ioctl_ack_set(device_fd, 1)
-                ts_print(
-                    f"[core {core_id}] Received FINISH record, stopping.",
-                    file=sys.stderr,
-                )
+                if not check_disk_space():
+                    ts_print(
+                        f"[core {core_id}] ERROR: disk space low, stopping.",
+                        file=sys.stderr,
+                    )
+                else:
+                    ts_print(
+                        f"[core {core_id}] Received FINISH record, stopping.",
+                        file=sys.stderr,
+                    )
 
                 if out is not None:
                     out.close()
@@ -667,17 +527,6 @@ def trace_loop_with_timeout(
                     kill_qemu(qemu_proc)
                 relay_fd.close()
                 return 0
-
-            if not check_disk_space():
-                ts_print(
-                    f"[core {core_id}] Low SSD space detected, requesting rollover",
-                    file=sys.stderr,
-                )
-                pause_event.set()
-                out = worker_pause_for_rollover(core_id, out)
-                current_insn_bytes = None
-                last_received = time.monotonic()
-                continue
 
             insn_bytes = bytes(hdr.instruction[:hdr.instruction_len])
             if current_insn_bytes != insn_bytes:
@@ -690,7 +539,7 @@ def trace_loop_with_timeout(
 
             remaining = hdr.record_len - HEADER_SIZE
             body_blob = read_exact_or_none(relay_fd, remaining)
-
+            
             if body_blob is None:
                 time.sleep(POLL_SLEEP_SEC)
                 continue
@@ -740,24 +589,8 @@ def trace_loop_with_timeout(
 # Worker
 # ----------------------------
 
-def core_worker(
-    core_id: int,
-    args,
-    shared_stop_event,
-    shared_print_lock,
-    shared_pause_event,
-    shared_paused_workers,
-    shared_num_workers,
-    shared_rollover_lock,
-) -> None:
-    init_process_globals(
-        shared_stop_event,
-        shared_print_lock,
-        shared_pause_event,
-        shared_paused_workers,
-        shared_num_workers,
-        shared_rollover_lock,
-    )
+def core_worker(core_id: int, args, shared_stop_event, shared_print_lock) -> None:
+    init_process_globals(shared_stop_event, shared_print_lock)
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     os.sched_setaffinity(0, {core_id})
 
@@ -784,7 +617,7 @@ def core_worker(
         ts_print(
             f"[core {core_id}] Started QEMU pinned to core {core_id} via {qemu_script} (pid={qemu_proc.pid})",
             file=sys.stderr,
-        )
+        )   
 
         trace_loop_with_timeout(
             core_id=core_id,
@@ -826,7 +659,7 @@ def get_available_cores() -> list[int]:
         return list(range(n))
 
 def main() -> int:
-    global stop_event, print_lock, pause_event, paused_workers, num_workers, rollover_lock
+    global stop_event, print_lock
 
     ap = argparse.ArgumentParser()
     ap.add_argument("--qemu-script", default="./../vms/qemu.sh", help="Path to qemu start script")
@@ -857,6 +690,9 @@ def main() -> int:
 
     args = ap.parse_args()
 
+    stop_event = mp.Event()
+    print_lock = mp.Lock()
+
     if args.count_only:
         count_log_files()
         return 0
@@ -866,22 +702,7 @@ def main() -> int:
     else:
         cores = get_available_cores()
 
-    stop_event = mp.Event()
-    print_lock = mp.Lock()
-    pause_event = mp.Event()
-    paused_workers = mp.Value('i', 0)
-    num_workers = mp.Value('i', len(cores))
-    rollover_lock = mp.Lock()
-
     ts_print(f"Using cores: {cores}", file=sys.stderr)
-
-    if not check_ssd_mounted():
-        ts_print(f"ERROR: SSD directory {SSD_DIR} is not mounted or writable.", file=sys.stderr)
-        return 1
-
-    if not check_truenas_mounted():
-        ts_print(f"ERROR: TrueNAS directory {TRUENAS_DIR} is not mounted or writable.", file=sys.stderr)
-        return 1
 
     if args.save_state:
         base_path = Path(args.save_state)
@@ -948,16 +769,7 @@ def main() -> int:
         for core_id in cores:
             p = mp.Process(
                 target=core_worker,
-                args=(
-                    core_id,
-                    args,
-                    stop_event,
-                    print_lock,
-                    pause_event,
-                    paused_workers,
-                    num_workers,
-                    rollover_lock,
-                ),
+                args=(core_id, args, stop_event, print_lock),
                 name=f"core-{core_id}",
                 daemon=False,
             )
@@ -970,13 +782,6 @@ def main() -> int:
             while any(p.is_alive() for p in procs):
                 for p in procs:
                     p.join(timeout=0.2)
-
-                if pause_event.is_set():
-                    ok = perform_log_rollover_from_parent()
-                    if not ok:
-                        had_error = True
-                        stop_event.set()
-                        break
 
                 if time.monotonic() - last_snapshot_time >= SNAPSHOT_TIMEOUT:
                     try:
@@ -1074,10 +879,6 @@ def main() -> int:
 if __name__ == "__main__":
     if not check_ssd_mounted():
         ts_print(f"ERROR: SSD directory {SSD_DIR} is not mounted or writable.", file=sys.stderr)
-        raise SystemExit(1)
-
-    if not check_truenas_mounted():
-        ts_print(f"ERROR: TrueNAS directory {TRUENAS_DIR} is not mounted or writable.", file=sys.stderr)
         raise SystemExit(1)
 
     raise SystemExit(main())
