@@ -66,6 +66,44 @@ void map_physical_to_virtual(unsigned long phys_addr, unsigned long virt_addr) {
     asm volatile("invlpg (%0)" ::"r"(virt_addr) : "memory");
 }
 
+unsigned long get_physical_from_virtual(unsigned long virt_addr)
+{
+    unsigned long *pml5, *pml4, *pdp, *pd, *pt;
+    unsigned long index5, index4, index3, index2, index1;
+    unsigned long phys_base;
+
+    pml5 = (unsigned long *)phys_to_virt(read_cr3() & PAGE_MASK);
+
+    index5 = (virt_addr >> 48) & 0x1FF;
+    index4 = (virt_addr >> 39) & 0x1FF;
+    index3 = (virt_addr >> 30) & 0x1FF;
+    index2 = (virt_addr >> 21) & 0x1FF;
+    index1 = (virt_addr >> 12) & 0x1FF;
+
+    if (!pml5[index5])
+        return 0;
+
+    pml4 = (unsigned long *)phys_to_virt(pml5[index5] & PAGE_MASK);
+    if (!pml4[index4])
+        return 0;
+
+    pdp = (unsigned long *)phys_to_virt(pml4[index4] & PAGE_MASK);
+    if (!pdp[index3])
+        return 0;
+
+    pd = (unsigned long *)phys_to_virt(pdp[index3] & PAGE_MASK);
+    if (!pd[index2])
+        return 0;
+
+    pt = (unsigned long *)phys_to_virt(pd[index2] & PAGE_MASK);
+    if (!pt[index1])
+        return 0;
+
+    phys_base = pt[index1] & PAGE_MASK;
+
+    return (phys_base | (virt_addr & ~PAGE_MASK)) & 0xFFFFFFFFFFFFF;
+}
+
 void map_physical_to_virtual_4lvl(unsigned long phys_addr, unsigned long virt_addr)
 {
     unsigned long *pml4, *pdp, *pd, *pt;

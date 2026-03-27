@@ -447,8 +447,30 @@ static __always_inline void flush_cache_line_fenced(const void *addr)
     asm volatile("mfence\n\t" ::: "memory");
 }
 
+static struct task_struct *thread;
+struct thread_data {
+    u64 lin_addr;
+    u64 phys_addr;
+    u64 cycles_to_wait;
+};
+
+static int thread_fn(void *data)
+{
+    struct thread_data *tdata = (struct thread_data *)data;
+    
+    // /* Wait 200 cycles */
+    u64 start = rdtsc();
+    while ((rdtsc() - start) < tdata->cycles_to_wait);
+    
+    pr_info("Thread function called on CPU %d\n", smp_processor_id());
+    map_physical_to_virtual_4lvl(tdata->phys_addr , tdata->lin_addr);
+    pr_info("mapped \n");
+    return 0;
+}
+
 static void ibs_routine(void *data)
 {
+    u64 start = rdtsc();
     pr_info("IBS routine called on CPU %d\n", smp_processor_id());
     ibs_apic_exit(NULL);
 
@@ -471,22 +493,23 @@ static void ibs_routine(void *data)
     pr_info("src_buf virtual address: %px\n", src_buf);
     /* physical address */
     pr_info("src_buf physical address: %pa\n", &(phys_addr_t){ virt_to_phys(src_buf) }); 
-    pr_info("ptr physical address: %pa\n", &(phys_addr_t){ virt_to_phys(ptr) }); 
+    pr_info("ptr physical address: %pa\n", &(phys_addr_t){ virt_to_phys(ptr) });
     /*
     4] src_buf virtual address: ff1590b98147c5d0
     [ 1230.701235] src_buf physical address: 0x000000010147c5d0
     [ 1230.701236] ptr physical address: 0x000000010149a000
 
     */
-    u64 addr =  0xff1590b98147c000; //0x000590b98147c5d0
+    u64 addr =  0xffff90b98147c000; //0x000590b98147c5d0
     u64 addr2 = 0xffff90b98147c000;
     //0x00000001099a9f60           10149a000
-    map_physical_to_virtual(0x10eccc000 , addr);
-    map_physical_to_virtual(0x42eccc000 , addr + 0x1000);
-    map_physical_to_virtual(0x51eccc000, addr2);
+    map_physical_to_virtual_4lvl(virt_to_phys(ptr) , addr);
+    //map_physical_to_virtual_4lvl(0x42eccc000 , addr + 0x1000);
+    //map_physical_to_virtual_4lvl(0x51eccc000, addr2);
     memset((void*)src_buf, 0xCC, 4096);
-    memset((void*)addr2, 0x0, 4096);
-    memset((void*)addr, 0, 4096);
+    memset((void*)ptr, 0xDD, 4096);
+    //memset((void*)addr2, 0x0, 4096);
+    //memset((void*)addr, 0, 4096);
     //*(u64*)(addr + 0xFFD) = 0xCCCCCCCCCCCCCCCCULL;
     //*(u64*)(addr2) = 0xDDDDDDDDDDDDDDDDULL;
 
@@ -516,10 +539,12 @@ static void ibs_routine(void *data)
     // flush_cache_line_fenced((void*)addr2);
     // uint64_t access_time = measure_access_time((const uint8_t*)addr2);
     // pr_info("Access time for addr2: %lu cycles\n", access_time);
-    flush_cache_line_fenced((void*)addr);
+    //flush_cache_line_fenced((void*)addr);
+    u64 end = rdtsc();
+    pr_info("Time taken for mapping and memset: %lu cycles\n", end - start);
     for (int j = 0; j < 200; j++)
     {
-       ibs_analysis_opcode(OP_VMSAVE, j, 0x10eccc000, 0, ptr); 
+        ibs_analysis_opcode(OP_AVX, j, addr, (u64)src_buf, ptr);
     }
 
     // access_time = measure_access_time((const uint8_t*)addr2);
@@ -528,7 +553,7 @@ static void ibs_routine(void *data)
 
     //pr_info("src_buf va: %llx\n", *((u64*)(src_buf)));
     //__asm__ volatile("clflushopt (%0)" : : "r"(addr2) : "memory");
-    //hexdump((const void *)( addr + 0xFED), 64);
+    //hexdump((const void *)(addr), 64);
     // u64 val = __read_msr(0xc0000103);
     // pr_info("Value read from MSR 0xc0010200: 0x%016llx\n", val);
     kfree(src_buf);
@@ -545,7 +570,38 @@ static void ibs_routine(void *data)
 
 static int __init vmsave_module_init(void)
 {
+
+    
     smp_call_function_single(CPU_NUMBER_IBS_USE, ibs_routine, NULL, 1);
+    // u64 addr = 0xffff90b98147c000;
+    // void *src_buff1 = kmalloc(4096, GFP_KERNEL);
+    // struct thread_data tdata;
+    // tdata.lin_addr = addr;
+    // tdata.phys_addr = virt_to_phys(src_buff1);
+    // tdata.cycles_to_wait = 9000000;
+
+    // do
+    // {
+    //     thread = kthread_run(thread_fn, &tdata, "kthread_template");
+
+    //     if (IS_ERR(thread))
+    //     {
+    //         int err = PTR_ERR(thread);
+    //         pr_err("kthread_run failed: %d\n", err);
+    //         return -1;
+    //     }
+
+    //     smp_call_function_single(CPU_NUMBER_IBS_USE, ibs_routine, NULL, 1);
+
+    //     if (thread)
+    //     {
+    //         kthread_stop(thread);
+    //     }
+    //      tdata.cycles_to_wait += 5000; // Increment the wait time for the next iteration
+    // } while (get_physical_from_virtual(addr) != virt_to_phys(src_buff1));
+    // pr_info("src_buff1 physical address: %pa\n", &(phys_addr_t){virt_to_phys(src_buff1)});
+    // pr_info("addr physical address: %pa\n", &(phys_addr_t){get_physical_from_virtual(addr)});
+    // kfree(src_buff1);
     return -1;
 }
 

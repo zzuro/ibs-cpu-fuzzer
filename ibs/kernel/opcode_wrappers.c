@@ -219,7 +219,7 @@ int fn_name(u64 arg0, u64 arg1, struct opcode_result *out)                    \
     asm volatile(                                                             \
         "mov %[buf], %%rdi\n\t"                                               \
         "mov %[port], %%edx\n\t"                                               \
-        "movl $7, %%ecx\n\t"                                               \
+        "movl $100, %%ecx\n\t"                                               \
         "movl $0, %[rc]\n\t"                                                  \
         "movl $-1, %[vec]\n\t"                                                \
         "leaq 1f(%%rip), %[rip]\n\t"                                          \
@@ -609,6 +609,7 @@ struct opcode_desc opcode_table[] = {
     OPENTRY(OP_READ_CR4, true, false, false),
     OPENTRY(OP_RDMSR, true, true, false),
     OPENTRY(OP_CUSTOM1, true, true, true),
+    OPENTRY(OP_AVX, true, true, true),
     {}
 };
 
@@ -669,10 +670,140 @@ DEFINE_OPCODE_WRAPPER0(try_read_cr4, "mov %%cr4, %%rax")
 
 DEFINE_OPCODE_WRAPPER_RDMSR(try_rdmsr)
 
+#include <asm/fpu/api.h>
+
+
+static inline void ex_vpgatherdd(const int *base, const int *idx, int *out)
+{
+    asm volatile(
+        "vmovdqu   (%[idx]), %%ymm1\n\t"      /* indices */
+        "vpcmpeqd  %%ymm2, %%ymm2, %%ymm2\n\t"/* mask = all ones */
+        "vpxor     %%ymm0, %%ymm0, %%ymm0\n\t"/* dest seed */
+        "vpgatherdd %%ymm2, (%[base],%%ymm1,4), %%ymm0\n\t"
+        "vmovdqu   %%ymm0, (%[out])\n\t"
+        "vzeroupper\n\t"
+        :
+        : [base]"r"(base), [idx]"r"(idx), [out]"r"(out)
+        : "ymm0", "ymm1", "ymm2", "memory"
+    );
+}
+
+static inline void ex_vgatherdps(const float *base, const int *idx, float *out)
+{
+    asm volatile(
+        "vmovdqu    (%[idx]), %%ymm1\n\t"
+        "vpcmpeqd   %%ymm2, %%ymm2, %%ymm2\n\t"
+        "vxorps     %%ymm0, %%ymm0, %%ymm0\n\t"
+        "vgatherdps %%ymm2, (%[base],%%ymm1,4), %%ymm0\n\t"
+        "vmovups    %%ymm0, (%[out])\n\t"
+        "vzeroupper\n\t"
+        :
+        : [base]"r"(base), [idx]"r"(idx), [out]"r"(out)
+        : "ymm0", "ymm1", "ymm2", "memory"
+    );
+}
+
+static inline void ex_vpermd(const int *src, const int *perm, int *out)
+{
+    asm volatile(
+        "vmovdqu (%[src]), %%ymm1\n\t"
+        "vmovdqu (%[perm]), %%ymm2\n\t"
+        "vpermd  %%ymm1, %%ymm2, %%ymm0\n\t"
+        "vmovdqu %%ymm0, (%[out])\n\t"
+        "vzeroupper\n\t"
+        :
+        : [src]"r"(src), [perm]"r"(perm), [out]"r"(out)
+        : "ymm0", "ymm1", "ymm2", "memory"
+    );
+}
+
+static inline void ex_vpermps(const float *src, const int *perm, float *out)
+{
+    asm volatile(
+        "vmovups (%[src]), %%ymm1\n\t"
+        "vmovdqu (%[perm]), %%ymm2\n\t"
+        "vpermps %%ymm1, %%ymm2, %%ymm0\n\t"
+        "vmovups %%ymm0, (%[out])\n\t"
+        "vzeroupper\n\t"
+        :
+        : [src]"r"(src), [perm]"r"(perm), [out]"r"(out)
+        : "ymm0", "ymm1", "ymm2", "memory"
+    );
+}
+
+static inline void ex_vpshufb(const unsigned char *src,
+                              const unsigned char *ctl,
+                              unsigned char *out)
+{
+    asm volatile(
+        "vmovdqu (%[src]), %%ymm1\n\t"
+        "vmovdqu (%[ctl]), %%ymm2\n\t"
+        "vpshufb %%ymm2, %%ymm1, %%ymm0\n\t"
+        "vmovdqu %%ymm0, (%[out])\n\t"
+        "vzeroupper\n\t"
+        :
+        : [src]"r"(src), [ctl]"r"(ctl), [out]"r"(out)
+        : "ymm0", "ymm1", "ymm2", "memory"
+    );
+}
+
+static inline void ex_vpmaskmovd_store(int *dst, const int *src, const int *mask)
+{
+    asm volatile(
+        "vmovdqu    (%[src]), %%ymm0\n\t"
+        "vmovdqu    (%[mask]), %%ymm1\n\t"
+        "vpmaskmovd %%ymm0, %%ymm1, (%[dst])\n\t"
+        "vzeroupper\n\t"
+        :
+        : [dst]"r"(dst), [src]"r"(src), [mask]"r"(mask)
+        : "ymm0", "ymm1", "memory"
+    );
+}
+
+//here there is an address (uop 102), might be intresting in guest
+static inline void ex_vpmaskmovps_load(const float *src, const int *mask, float *out)
+{
+    asm volatile(
+        "vmovdqu    (%[mask]), %%ymm1\n\t"
+        "vpmaskmovd (%[src]), %%ymm1, %%ymm0\n\t"
+        "vmovups    %%ymm0, (%[out])\n\t"
+        "vzeroupper\n\t"
+        :
+        : [src]"r"(src), [mask]"r"(mask), [out]"r"(out)
+        : "ymm0", "ymm1", "memory"
+    );
+}
+
+static inline void ex_vblendvps(const float *a, const float *b, const int *mask, float *out)
+{
+    asm volatile(
+        "vmovups   (%[a]), %%ymm1\n\t"
+        "vmovups   (%[b]), %%ymm2\n\t"
+        "vmovdqu   (%[m]), %%ymm3\n\t"
+        "vblendvps %%ymm3, %%ymm2, %%ymm1, %%ymm0\n\t"
+        "vmovups   %%ymm0, (%[out])\n\t"
+        "vzeroupper\n\t"
+        :
+        : [a]"r"(a), [b]"r"(b), [m]"r"(mask), [out]"r"(out)
+        : "ymm0", "ymm1", "ymm2", "ymm3", "memory"
+    );
+}
+
+#include <asm/io.h>
+const int gather_base[8] = {0, 4, 8, 12, 16, 20, 24, 28};
+const int mask_all_ones[8] = {-1, -1, -1, -1, -1, -1, -1, -1};
+static int run_avx(u64 arg0, u64 arg1, struct opcode_result *out)
+{
+    out->rc = 0;
+    kernel_fpu_begin();
+    ex_vblendvps((const float*)arg0, (const float*)(arg0 + 128), gather_base, (float*)arg1);
+    kernel_fpu_end();
+    return 0;
+}
 
 int run_selected_opcode(enum opcode_id id, u64 arg0, u64 arg1,
                         struct opcode_result *out)
-{
+{   
     switch (id) {
     case OP_NOP:
         return try_nop(arg0, arg1, out);
@@ -750,6 +881,8 @@ int run_selected_opcode(enum opcode_id id, u64 arg0, u64 arg1,
         return try_read_cr4(arg0, arg1, out);
     case OP_RDMSR:
         return try_rdmsr(arg0, arg1, out);
+    case OP_AVX:
+        return run_avx(arg0, arg1, out);
     default:
         if (out) {
             out->rc = -1;

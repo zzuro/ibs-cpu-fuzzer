@@ -51,6 +51,7 @@ enum opcode_id {
     OP_READ_CR4,
     OP_RDMSR,
     OP_CUSTOM1,
+    OP_AVX,
 };
 
 struct opcode_desc {

@@ -15,3 +15,242 @@ u32 test_avx(void){
 
     return S[0];
 }
+
+
+void ex_vpgatherdd(const int *base, const int *idx, int *out)
+{
+    asm volatile(
+        "vmovdqu   (%[idx]), %%ymm1\n\t"      /* indices */
+        "vpcmpeqd  %%ymm2, %%ymm2, %%ymm2\n\t"/* mask = all ones */
+        "vpxor     %%ymm0, %%ymm0, %%ymm0\n\t"/* dest seed */
+        "vpgatherdd %%ymm2, (%[base],%%ymm1,4), %%ymm0\n\t"
+        "vmovdqu   %%ymm0, (%[out])\n\t"
+        "vzeroupper\n\t"
+        :
+        : [base]"r"(base), [idx]"r"(idx), [out]"r"(out)
+        : "ymm0", "ymm1", "ymm2", "memory"
+    );
+}
+
+void ex_vgatherdps(const float *base, const int *idx, float *out)
+{
+    asm volatile(
+        "vmovdqu    (%[idx]), %%ymm1\n\t"
+        "vpcmpeqd   %%ymm2, %%ymm2, %%ymm2\n\t"
+        "vxorps     %%ymm0, %%ymm0, %%ymm0\n\t"
+        "vgatherdps %%ymm2, (%[base],%%ymm1,4), %%ymm0\n\t"
+        "vmovups    %%ymm0, (%[out])\n\t"
+        "vzeroupper\n\t"
+        :
+        : [base]"r"(base), [idx]"r"(idx), [out]"r"(out)
+        : "ymm0", "ymm1", "ymm2", "memory"
+    );
+}
+
+void ex_vpermd(const int *src, const int *perm, int *out)
+{
+    asm volatile(
+        "vmovdqu (%[src]), %%ymm1\n\t"
+        "vmovdqu (%[perm]), %%ymm2\n\t"
+        "vpermd  %%ymm1, %%ymm2, %%ymm0\n\t"
+        "vmovdqu %%ymm0, (%[out])\n\t"
+        "vzeroupper\n\t"
+        :
+        : [src]"r"(src), [perm]"r"(perm), [out]"r"(out)
+        : "ymm0", "ymm1", "ymm2", "memory"
+    );
+}
+
+void ex_vpermps(const float *src, const int *perm, float *out)
+{
+    asm volatile(
+        "vmovups (%[src]), %%ymm1\n\t"
+        "vmovdqu (%[perm]), %%ymm2\n\t"
+        "vpermps %%ymm1, %%ymm2, %%ymm0\n\t"
+        "vmovups %%ymm0, (%[out])\n\t"
+        "vzeroupper\n\t"
+        :
+        : [src]"r"(src), [perm]"r"(perm), [out]"r"(out)
+        : "ymm0", "ymm1", "ymm2", "memory"
+    );
+}
+
+void ex_vpshufb(const unsigned char *src,
+                              const unsigned char *ctl,
+                              unsigned char *out)
+{
+    asm volatile(
+        "vmovdqu (%[src]), %%ymm1\n\t"
+        "vmovdqu (%[ctl]), %%ymm2\n\t"
+        "vpshufb %%ymm2, %%ymm1, %%ymm0\n\t"
+        "vmovdqu %%ymm0, (%[out])\n\t"
+        "vzeroupper\n\t"
+        :
+        : [src]"r"(src), [ctl]"r"(ctl), [out]"r"(out)
+        : "ymm0", "ymm1", "ymm2", "memory"
+    );
+}
+
+void ex_vpmaskmovd_store(int *dst, const int *src, const int *mask)
+{
+    asm volatile(
+        "vmovdqu    (%[src]), %%ymm0\n\t"
+        "vmovdqu    (%[mask]), %%ymm1\n\t"
+        "vpmaskmovd %%ymm0, %%ymm1, (%[dst])\n\t"
+        "vzeroupper\n\t"
+        :
+        : [dst]"r"(dst), [src]"r"(src), [mask]"r"(mask)
+        : "ymm0", "ymm1", "memory"
+    );
+}
+
+//here there is an address (uop 102), might be intresting in guest
+void ex_vpmaskmovps_load(const float *src, const int *mask, float *out)
+{
+    asm volatile(
+        "vmovdqu    (%[mask]), %%ymm1\n\t"
+        "vpmaskmovd (%[src]), %%ymm1, %%ymm0\n\t"
+        "vmovups    %%ymm0, (%[out])\n\t"
+        "vzeroupper\n\t"
+        :
+        : [src]"r"(src), [mask]"r"(mask), [out]"r"(out)
+        : "ymm0", "ymm1", "memory"
+    );
+}
+
+void ex_vblendvps(const float *a, const float *b, const int *mask, float *out)
+{
+    asm volatile(
+        "vmovups   (%[a]), %%ymm1\n\t"
+        "vmovups   (%[b]), %%ymm2\n\t"
+        "vmovdqu   (%[m]), %%ymm3\n\t"
+        "vblendvps %%ymm3, %%ymm2, %%ymm1, %%ymm0\n\t"
+        "vmovups   %%ymm0, (%[out])\n\t"
+        "vzeroupper\n\t"
+        :
+        : [a]"r"(a), [b]"r"(b), [m]"r"(mask), [out]"r"(out)
+        : "ymm0", "ymm1", "ymm2", "ymm3", "memory"
+    );
+}
+
+void ex_vpmulld(const int *a, const int *b, int *out)
+{
+    asm volatile(
+        "vmovdqu (%[a]), %%ymm1\n\t"
+        "vmovdqu (%[b]), %%ymm2\n\t"
+        "vpmulld %%ymm2, %%ymm1, %%ymm0\n\t"
+        "vmovdqu %%ymm0, (%[out])\n\t"
+        "vzeroupper\n\t"
+        :
+        : [a]"r"(a), [b]"r"(b), [out]"r"(out)
+        : "ymm0", "ymm1", "ymm2", "memory"
+    );
+}
+
+void ex_vpmuludq(const unsigned int *a,
+                               const unsigned int *b,
+                               unsigned long long *out)
+{
+    asm volatile(
+        "vmovdqu   (%[a]), %%ymm1\n\t"
+        "vmovdqu   (%[b]), %%ymm2\n\t"
+        "vpmuludq  %%ymm2, %%ymm1, %%ymm0\n\t"
+        "vmovdqu   %%ymm0, (%[out])\n\t"
+        "vzeroupper\n\t"
+        :
+        : [a]"r"(a), [b]"r"(b), [out]"r"(out)
+        : "ymm0", "ymm1", "ymm2", "memory"
+    );
+}
+
+void ex_vpmaddubsw(const unsigned char *a,
+                                 const signed char *b,
+                                 short *out)
+{
+    asm volatile(
+        "vmovdqu     (%[a]), %%ymm1\n\t"
+        "vmovdqu     (%[b]), %%ymm2\n\t"
+        "vpmaddubsw  %%ymm2, %%ymm1, %%ymm0\n\t"
+        "vmovdqu     %%ymm0, (%[out])\n\t"
+        "vzeroupper\n\t"
+        :
+        : [a]"r"(a), [b]"r"(b), [out]"r"(out)
+        : "ymm0", "ymm1", "ymm2", "memory"
+    );
+}
+
+void ex_vpmaddwd(const short *a, const short *b, int *out)
+{
+    asm volatile(
+        "vmovdqu   (%[a]), %%ymm1\n\t"
+        "vmovdqu   (%[b]), %%ymm2\n\t"
+        "vpmaddwd  %%ymm2, %%ymm1, %%ymm0\n\t"
+        "vmovdqu   %%ymm0, (%[out])\n\t"
+        "vzeroupper\n\t"
+        :
+        : [a]"r"(a), [b]"r"(b), [out]"r"(out)
+        : "ymm0", "ymm1", "ymm2", "memory"
+    );
+}
+
+void ex_vfmaddsub231ps(const float *a,
+                                     const float *b,
+                                     const float *c,
+                                     float *out)
+{
+    asm volatile(
+        "vmovups            (%[a]), %%ymm0\n\t"
+        "vmovups            (%[b]), %%ymm1\n\t"
+        "vmovups            (%[c]), %%ymm2\n\t"
+        "vfmaddsub231ps     %%ymm2, %%ymm1, %%ymm0\n\t"
+        "vmovups            %%ymm0, (%[out])\n\t"
+        "vzeroupper\n\t"
+        :
+        : [a]"r"(a), [b]"r"(b), [c]"r"(c), [out]"r"(out)
+        : "ymm0", "ymm1", "ymm2", "memory"
+    );
+}
+
+void ex_vperm2i128(const int *a, const int *b, int *out)
+{
+    asm volatile(
+        "vmovdqu    (%[a]), %%ymm1\n\t"
+        "vmovdqu    (%[b]), %%ymm2\n\t"
+        "vperm2i128 $0x21, %%ymm2, %%ymm1, %%ymm0\n\t"
+        "vmovdqu    %%ymm0, (%[out])\n\t"
+        "vzeroupper\n\t"
+        :
+        : [a]"r"(a), [b]"r"(b), [out]"r"(out)
+        : "ymm0", "ymm1", "ymm2", "memory"
+    );
+}
+
+void ex_vpsllvd(const int *src, const int *counts, int *out)
+{
+    asm volatile(
+        "vmovdqu  (%[src]), %%ymm1\n\t"
+        "vmovdqu  (%[cnt]), %%ymm2\n\t"
+        "vpsllvd  %%ymm2, %%ymm1, %%ymm0\n\t"
+        "vmovdqu  %%ymm0, (%[out])\n\t"
+        "vzeroupper\n\t"
+        :
+        : [src]"r"(src), [cnt]"r"(counts), [out]"r"(out)
+        : "ymm0", "ymm1", "ymm2", "memory"
+    );
+}
+
+void ex_vpalignr(const unsigned char *a,
+                               const unsigned char *b,
+                               unsigned char *out)
+{
+    asm volatile(
+        "vmovdqu   (%[a]), %%ymm1\n\t"
+        "vmovdqu   (%[b]), %%ymm2\n\t"
+        "vpalignr  $8, %%ymm2, %%ymm1, %%ymm0\n\t"
+        "vmovdqu   %%ymm0, (%[out])\n\t"
+        "vzeroupper\n\t"
+        :
+        : [a]"r"(a), [b]"r"(b), [out]"r"(out)
+        : "ymm0", "ymm1", "ymm2", "memory"
+    );
+}
