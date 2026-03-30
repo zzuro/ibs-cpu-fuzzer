@@ -52,6 +52,7 @@
 #include <asm/amd/ibs.h>
 #include <asm/extable.h>
 #include <asm/trapnr.h>
+#include <linux/delay.h>
 
 #include "apic.h"
 #include "msr.h"
@@ -128,8 +129,7 @@ static __always_inline uint64_t measure_access_time(const uint8_t *addr)
      * mfence is conservative; lfence is the key one for load timing.
      */
     asm volatile("mfence\n\t"
-                 "lfence\n\t"
-                 ::: "memory");
+                 "lfence\n\t" ::: "memory");
 
     /* Read starting timestamp */
     asm volatile("rdtscp\n\t"
@@ -160,6 +160,26 @@ static __always_inline uint64_t measure_access_time(const uint8_t *addr)
     return (((uint64_t)hi_end << 32) | lo_end) -
            (((uint64_t)hi_start << 32) | lo_start);
 }
+
+static u64 __maybe_unused rmpupdate_firmware(u64 paddr) {
+    struct rmp_state state = {0};
+    u64 ret;
+
+    state.assigned = 1;
+    state.pagesize = 0;
+    state.immutable = 1;
+
+    do {
+        /* Binutils version 2.36 supports the RMPUPDATE mnemonic. */
+        asm volatile(".byte 0xF2, 0x0F, 0x01, 0xFE"
+                     : "=a"(ret)
+                     : "a"(paddr), "c"((unsigned long)&state)
+                     : "memory", "cc");
+    } while (ret == RMPUPDATE_FAIL_OVERLAP);
+
+    return ret;
+}
+
 
 typedef union ibs_opt_ctrl
 {
@@ -291,16 +311,17 @@ static void __maybe_unused noinline read_ibs_ctrl(u64 uop_cnt, u64 rip_out)
     __write_msr(BP_IBSTGT_RIP, 0);
 }
 
-struct gpr_state {
+struct gpr_state
+{
     uint64_t rax, rbx, rcx, rdx;
     uint64_t rsi, rdi, rbp, rsp;
-    uint64_t r8,  r9,  r10, r11;
+    uint64_t r8, r9, r10, r11;
     uint64_t r12, r13, r14, r15;
 };
 
 static inline void read_gprs(struct gpr_state *out)
 {
-    __asm__ volatile (
+    __asm__ volatile(
         "mov %%rax, 0(%0)\n\t"
         "mov %%rbx, 8(%0)\n\t"
         "mov %%rcx, 16(%0)\n\t"
@@ -319,8 +340,7 @@ static inline void read_gprs(struct gpr_state *out)
         "mov %%r15, 120(%0)\n\t"
         :
         : "r"(out)
-        : "memory"
-    );
+        : "memory");
 }
 
 void dump_gprs(void)
@@ -330,72 +350,62 @@ void dump_gprs(void)
 
     pr_info("RAX=%016lx RBX=%016lx RCX=%016lx RDX=%016lx\n", r.rax, r.rbx, r.rcx, r.rdx);
     pr_info("RSI=%016lx RDI=%016lx RBP=%016lx RSP=%016lx\n", r.rsi, r.rdi, r.rbp, r.rsp);
-    pr_info("R8 =%016lx R9 =%016lx R10=%016lx R11=%016lx\n", r.r8,  r.r9,  r.r10, r.r11);
+    pr_info("R8 =%016lx R9 =%016lx R10=%016lx R11=%016lx\n", r.r8, r.r9, r.r10, r.r11);
     pr_info("R12=%016lx R13=%016lx R14=%016lx R15=%016lx\n", r.r12, r.r13, r.r14, r.r15);
 }
 
 static inline int repe_scasq(const void *src, uint64_t value, size_t count)
 {
     unsigned char zf;
-    __asm__ volatile (
+    __asm__ volatile(
         "rep scasq\n\t"
         "setz %0"
         : "=q"(zf), "+D"(src), "+c"(count)
         : "a"(value)
-        : "memory"
-    );
+        : "memory");
     return zf;
 }
-
 
 static inline int repe_cmpsb(const void *s1, const void *s2, size_t count)
 {
     unsigned char zf;
-    __asm__ volatile (
+    __asm__ volatile(
         "rep cmpsb\n\t"
         "setz %0"
         : "=q"(zf), "+S"(s1), "+D"(s2), "+c"(count)
         :
-        : "memory"
-    );
+        : "memory");
     return zf;
 }
 
 static inline void rep_stosq(void *dst, uint64_t value, size_t count)
 {
-    __asm__ volatile (
+    __asm__ volatile(
         "rep stosq"
         : "+D"(dst), "+c"(count)
         : "a"(value)
-        : "memory"
-    );
+        : "memory");
 }
 
 static inline void rep_movsq(void *dst, const void *src, size_t count)
 {
-    __asm__ volatile (
+    __asm__ volatile(
         "rep movsb"
         :
         : "D"(dst), "S"(src), "c"(count)
-        : "memory"
-    );
+        : "memory");
 }
 
 static inline uint64_t rep_lodsq(const void *src, size_t count)
 {
     uint64_t value = 0x0;
-    __asm__ volatile (
+    __asm__ volatile(
         "rep lodsq"
         : "+S"(src), "+c"(count), "=a"(value)
         :
-        : "memory"
-    );
+        : "memory");
     return value;
 }
-
-
-
-//0xffff90b98147c000
 
 static void ibs_analysis_opcode(enum opcode_id id, u64 location,
                                 u64 arg0, u64 arg1, u8 *ptr)
@@ -420,24 +430,25 @@ static void ibs_analysis_opcode(enum opcode_id id, u64 location,
     READ_ONCE(ptr[5]);
     READ_ONCE(ptr[6]);
 
-    if (res.rc == 0) {
+    if (res.rc == 0)
+    {
         // pr_info("%s success RIP=0x%llx\n",
         //         opcode_table[id].name, res.rip);
-    } else {
+    }
+    else
+    {
         pr_info("%s fault RIP=0x%llx vec=%d\n",
                 opcode_table[id].name, res.rip, res.vec);
     }
 
-
     read_ibs_ctrl(location, res.rip);
 }
-
 
 static inline void flush_tlb(void)
 {
     uintptr_t cr3;
-    __asm__ volatile ("mov %%cr3, %0" : "=r"(cr3));
-    __asm__ volatile ("mov %0, %%cr3" : : "r"(cr3) : "memory");
+    __asm__ volatile("mov %%cr3, %0" : "=r"(cr3));
+    __asm__ volatile("mov %0, %%cr3" : : "r"(cr3) : "memory");
 }
 
 static __always_inline void flush_cache_line_fenced(const void *addr)
@@ -448,160 +459,114 @@ static __always_inline void flush_cache_line_fenced(const void *addr)
 }
 
 static struct task_struct *thread;
-struct thread_data {
+
+struct thread_data
+{
     u64 lin_addr;
-    u64 phys_addr;
-    u64 cycles_to_wait;
+    u64 phys_addr1;
+    u64 phys_addr2;
 };
 
 static int thread_fn(void *data)
 {
     struct thread_data *tdata = (struct thread_data *)data;
-    
-    // /* Wait 200 cycles */
-    u64 start = rdtsc();
-    while ((rdtsc() - start) < tdata->cycles_to_wait);
-    
-    pr_info("Thread function called on CPU %d\n", smp_processor_id());
-    map_physical_to_virtual_4lvl(tdata->phys_addr , tdata->lin_addr);
-    pr_info("mapped \n");
+    u64 *pte = (u64 *)get_pte_address(tdata->lin_addr);
+    int core = smp_processor_id();
+    pr_info("Thread started on core %d, with linear address: 0x%llx\n", core, tdata->lin_addr);
+    while (!kthread_should_stop())
+    {
+
+        WRITE_ONCE(*pte, (tdata->phys_addr1 & PAGE_MASK) | PAGE_PRESENT | PAGE_RW | NX_BIT);
+        invlpgb_flush(tdata->lin_addr);
+
+        WRITE_ONCE(*pte, (tdata->phys_addr2 & PAGE_MASK) | PAGE_PRESENT | PAGE_RW | NX_BIT);
+        invlpgb_flush(tdata->lin_addr);
+    }
     return 0;
 }
 
 static void ibs_routine(void *data)
 {
-    u64 start = rdtsc();
     pr_info("IBS routine called on CPU %d\n", smp_processor_id());
     ibs_apic_exit(NULL);
 
-    u8 *ptr = (u8 *)kmalloc(4096, GFP_KERNEL);
+    struct thread_data *tdata = (struct thread_data *)data;
 
-    pr_info("Virtual address of allocated memory: %llx\n", (u64)ptr);
+    u8 *ptr = (u8 *)kmalloc(4096, GFP_KERNEL);
+    memset(ptr, 0xAA, 4096);
+
     if (!ptr)
     {
         pr_err("Failed to allocate memory\n");
         return;
     }
-    //105cfc000
-    u8 *src_buf = kmalloc(4096, GFP_KERNEL);
-    src_buf[0] = 0x41;
-    src_buf[1] = 0x42;
-    src_buf[2] = 0x43;
-    src_buf[3] = 0x44;
 
-    /* virtual address */
-    pr_info("src_buf virtual address: %px\n", src_buf);
-    /* physical address */
-    pr_info("src_buf physical address: %pa\n", &(phys_addr_t){ virt_to_phys(src_buf) }); 
-    pr_info("ptr physical address: %pa\n", &(phys_addr_t){ virt_to_phys(ptr) });
-    /*
-    4] src_buf virtual address: ff1590b98147c5d0
-    [ 1230.701235] src_buf physical address: 0x000000010147c5d0
-    [ 1230.701236] ptr physical address: 0x000000010149a000
-
-    */
-    u64 addr =  0xffff90b98147c000; //0x000590b98147c5d0
-    u64 addr2 = 0xffff90b98147c000;
-    //0x00000001099a9f60           10149a000
-    map_physical_to_virtual_4lvl(virt_to_phys(ptr) , addr);
-    //map_physical_to_virtual_4lvl(0x42eccc000 , addr + 0x1000);
-    //map_physical_to_virtual_4lvl(0x51eccc000, addr2);
-    memset((void*)src_buf, 0xCC, 4096);
-    memset((void*)ptr, 0xDD, 4096);
-    //memset((void*)addr2, 0x0, 4096);
-    //memset((void*)addr, 0, 4096);
-    //*(u64*)(addr + 0xFFD) = 0xCCCCCCCCCCCCCCCCULL;
-    //*(u64*)(addr2) = 0xDDDDDDDDDDDDDDDDULL;
-
-    pr_info("src_buf va: %llx\n", *((u64*)(src_buf)));
-
-    //memset((void*)addr, 0xAB, 4096);
-    // for(int i = 0; i < PAGE_SIZE/2; i++) {
-    //     *((u16*)(addr+i)) =  0xAABB;
-    // }
-    //*((u64*)(addr + 0xFF8)) = 0xdeadbeefdeadbeefULL;
-    //*((u32*)(addr)+0x10) = 0xdeadbeef;
-    //pr_info("va: %x\n", *((u16*)(addr + 0x3F8)));
-    // memset((void*)(addr), 0x0, 64 + 56);
-    // *((u64*)(addr)) = 0xdeadbeefdeadbeefULL;
-    // memset((void*)(addr + 64 + 60), 0xFFFEEF , 4);
-    // memset((void*)(addr + 128), 0x0, 4096-128);
-    // hexdump((const void *)addr, 4096);
-    //pr_info("src_buf physical address: %pa\n", &(phys_addr_t){ virt_to_phys(src_buf) });
-
-     /* Write the physical address of src_buf to ptr */
-
-    // for(int i = 0; i < 8; i++) {
-    //     *((u64*)(addr)+i) = 0xdeadbeefdeadbeefULL;
-    //     pr_info("addr va: %llx\n", *((u64*)(addr)+i));
-    // }
-    // flush_tlb();
-    // flush_cache_line_fenced((void*)addr2);
-    // uint64_t access_time = measure_access_time((const uint8_t*)addr2);
-    // pr_info("Access time for addr2: %lu cycles\n", access_time);
-    //flush_cache_line_fenced((void*)addr);
-    u64 end = rdtsc();
-    pr_info("Time taken for mapping and memset: %lu cycles\n", end - start);
+    pr_info("PA of allocated memory: %llx\n", get_physical_from_virtual_4lvl(tdata->lin_addr));
     for (int j = 0; j < 200; j++)
     {
-        ibs_analysis_opcode(OP_AVX, j, addr, (u64)src_buf, ptr);
+        ibs_analysis_opcode(OP_INSD, j, 0x80, tdata->lin_addr, ptr);
     }
 
-    // access_time = measure_access_time((const uint8_t*)addr2);
-    // pr_info("Access time for addr2: %lu cycles\n", access_time);
-
-
-    //pr_info("src_buf va: %llx\n", *((u64*)(src_buf)));
-    //__asm__ volatile("clflushopt (%0)" : : "r"(addr2) : "memory");
-    //hexdump((const void *)(addr), 64);
-    // u64 val = __read_msr(0xc0000103);
-    // pr_info("Value read from MSR 0xc0010200: 0x%016llx\n", val);
-    kfree(src_buf);
     kfree(ptr);
-
-    // // u64 addr =  0xff1590b98147c000;
-    // // map_physical_to_virtual(0x128cf1000, 0xff1590b98147c000);
-    
-    // // //*(u64*)addr = 0xdeadbeefdeadbeefULL;
-	// for(int i = 0; i < 8; i++) {
-    //     pr_info("addr va: %llx\n", *((u64*)(addr)+i));
-    // }
 }
 
 static int __init vmsave_module_init(void)
 {
+    size_t buff_size = 4096;
 
-    
-    smp_call_function_single(CPU_NUMBER_IBS_USE, ibs_routine, NULL, 1);
-    // u64 addr = 0xffff90b98147c000;
-    // void *src_buff1 = kmalloc(4096, GFP_KERNEL);
-    // struct thread_data tdata;
-    // tdata.lin_addr = addr;
-    // tdata.phys_addr = virt_to_phys(src_buff1);
-    // tdata.cycles_to_wait = 9000000;
+    unsigned char pattern[4] = {0x00, 0xFF, 0xFF, 0xFF};
+    void *tester_pattern = kmalloc(buff_size, GFP_KERNEL);
+    void *tester_zero = kmalloc(buff_size, GFP_KERNEL);
 
-    // do
-    // {
-    //     thread = kthread_run(thread_fn, &tdata, "kthread_template");
+    for (int i = 0; i < buff_size; i++)
+    {
+        ((unsigned char *)tester_pattern)[i] = pattern[i % 4];
+    }
+    memset(tester_zero, 0x00, buff_size);
 
-    //     if (IS_ERR(thread))
-    //     {
-    //         int err = PTR_ERR(thread);
-    //         pr_err("kthread_run failed: %d\n", err);
-    //         return -1;
-    //     }
+    struct thread_data tdata;
+    void *va_addr = vmalloc(buff_size);
+    tdata.lin_addr = (u64)va_addr;
 
-    //     smp_call_function_single(CPU_NUMBER_IBS_USE, ibs_routine, NULL, 1);
+    void *src_buff1 = kmalloc(buff_size, GFP_KERNEL);
+    void *src_buff2 = kmalloc(buff_size, GFP_KERNEL);
 
-    //     if (thread)
-    //     {
-    //         kthread_stop(thread);
-    //     }
-    //      tdata.cycles_to_wait += 5000; // Increment the wait time for the next iteration
-    // } while (get_physical_from_virtual(addr) != virt_to_phys(src_buff1));
-    // pr_info("src_buff1 physical address: %pa\n", &(phys_addr_t){virt_to_phys(src_buff1)});
-    // pr_info("addr physical address: %pa\n", &(phys_addr_t){get_physical_from_virtual(addr)});
-    // kfree(src_buff1);
+    tdata.phys_addr1 = virt_to_phys(src_buff1);
+    tdata.phys_addr2 = virt_to_phys(src_buff2);
+    map_physical_to_virtual_4lvl(tdata.phys_addr2, tdata.lin_addr);
+
+    memset(src_buff1, 0x00, buff_size);
+    memset(src_buff2, 0x00, buff_size);
+
+
+    thread = kthread_run(thread_fn, &tdata, "kthread_template");
+    if (IS_ERR(thread))
+    {
+        int err = PTR_ERR(thread);
+        pr_err("kthread_run failed: %d\n", err);
+        return -1;
+    }
+
+    smp_call_function_single(CPU_NUMBER_IBS_USE, ibs_routine, &tdata, 1);
+
+    if (thread)
+    {
+        kthread_stop(thread);
+    }
+
+    pr_info("Physical address 1: 0x%llx\n", tdata.phys_addr1);
+    pr_info("Physical address 2: 0x%llx\n", tdata.phys_addr2);
+    pr_info("PA of allocated memory: %llx\n", get_physical_from_virtual_4lvl(tdata.lin_addr));
+
+    hexdump(src_buff1, 64);
+    pr_info("--------------------------------------------------\n");
+    hexdump(src_buff2, 64);
+
+    kfree(src_buff1);
+    kfree(src_buff2);
+    kfree(tester_pattern);
+    kfree(tester_zero);
+    vfree(va_addr);
     return -1;
 }
 

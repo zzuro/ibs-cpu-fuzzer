@@ -47,7 +47,31 @@
 #include <linux/swap.h>
 #include <linux/syscore_ops.h>
 #include <linux/version.h>
+#include <linux/mm.h> 
+#include <asm/tlbflush.h>  
+
+
+#define PAGE_PRESENT 0x1
+#define PAGE_RW 0x2
+#define PAGE_USER 0x4
+#define NX_BIT (0x1ULL << 63)
+#define PAGE_SIZE_4K 4096
+
+#define PCD_BIT (0x1ULL << 4)
+
+#define INVLPGB_FLAG_VA     BIT(0)
+#define INVLPGB_FLAG_PCID   BIT(1)
+#define INVLPGB_FLAG_ASID   BIT(2)
+#define INVLPGB_FLAG_GLOBAL BIT(3)
+
+enum addr_stride {
+	PTE_STRIDE = 0,
+	PMD_STRIDE = 1
+};
 
 void map_physical_to_virtual(unsigned long phys_addr, unsigned long virt_addr);
 unsigned long get_physical_from_virtual(unsigned long virt_addr);
+unsigned long * get_pte_address(unsigned long virt_addr);
 void map_physical_to_virtual_4lvl(unsigned long phys_addr, unsigned long virt_addr);
+unsigned long get_physical_from_virtual_4lvl(unsigned long virt_addr);
+void invlpgb_flush(unsigned long addr);
