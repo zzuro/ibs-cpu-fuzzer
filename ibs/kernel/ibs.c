@@ -510,9 +510,28 @@ static void ibs_routine(void *data)
     kfree(ptr);
 }
 
+static void check_rmp_protection(u64 vaddr)
+{
+    struct opcode_result res;
+    map_physical_to_virtual_4lvl(0xa294bba0, vaddr);
+
+    run_selected_opcode(OP_MOVL, 0xDEADBEEFDEADBEEF, vaddr, &res);
+    pr_info("RESULT OF MOVL: rc=%d vec=%d\n", res.rc, res.vec);
+
+    hexdump((void*)vaddr, 128);
+
+}
+
 static int __init vmsave_module_init(void)
 {
     size_t buff_size = 4096;
+    void *va_addr = vmalloc(buff_size);
+    
+    check_rmp_protection((u64)va_addr);
+   
+    vfree(va_addr);
+    return -1;
+    
 
     unsigned char pattern[4] = {0x00, 0xFF, 0xFF, 0xFF};
     void *tester_pattern = kmalloc(buff_size, GFP_KERNEL);
@@ -525,7 +544,6 @@ static int __init vmsave_module_init(void)
     memset(tester_zero, 0x00, buff_size);
 
     struct thread_data tdata;
-    void *va_addr = vmalloc(buff_size);
     tdata.lin_addr = (u64)va_addr;
 
     void *src_buff1 = kmalloc(buff_size, GFP_KERNEL);
