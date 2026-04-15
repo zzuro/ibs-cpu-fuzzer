@@ -6,6 +6,53 @@
 
 #include "opcode_wrappers.h"
 
+
+static __always_inline uint64_t measure_access_time(const uint8_t *addr)
+{
+    uint32_t lo_start, hi_start;
+    uint32_t lo_end, hi_end;
+    uint32_t aux;
+    volatile uint8_t value;
+    preempt_disable();
+    /*
+     * Serialize earlier memory ops before timing.
+     * mfence is conservative; lfence is the key one for load timing.
+     */
+    asm volatile("mfence\n\t"
+                 "lfence\n\t" ::: "memory");
+
+    /* Read starting timestamp */
+    asm volatile("rdtscp\n\t"
+                 : "=a"(lo_start), "=d"(hi_start), "=c"(aux)
+                 :
+                 : "memory");
+
+    /* Prevent later ops from executing early */
+    asm volatile("lfence\n\t" ::: "memory");
+
+    /* Timed load */
+    asm volatile("movb (%1), %0\n\t"
+                 : "=r"(value)
+                 : "r"(addr)
+                 : "memory");
+
+    /* Ensure load completes before reading end timestamp */
+    asm volatile("lfence\n\t" ::: "memory");
+
+    /* Read ending timestamp */
+    asm volatile("rdtscp\n\t"
+                 : "=a"(lo_end), "=d"(hi_end), "=c"(aux)
+                 :
+                 : "memory");
+
+    asm volatile("mfence\n\t" ::: "memory");
+    preempt_enable();
+    return (((uint64_t)hi_end << 32) | lo_end) -
+           (((uint64_t)hi_start << 32) | lo_start);
+}
+
+
+
 #define OPENTRY(_id, _enabled, _arg0, _arg1)		\
 	{						\
 		.id = (_id),				\
@@ -629,8 +676,8 @@ struct opcode_desc opcode_table[] = {
 	OPENTRY(OP_RMPUPDATE, true, true, true),
 	OPENTRY(OP_LFENCE, true, false, false),
 	OPENTRY(OP_RDTSCP, true, false, false),
-	OPENTRY(OP_PREFETCHW, true, true, false),
-	OPENTRY(OP_PREFETCHWT1, true, true, false),
+	OPENTRY(OP_PREFETCHNTA, true, true, false),
+	OPENTRY(OP_PREFETCHNTAT1, true, true, false),
 	OPENTRY(OP_READ_CR0, true, false, false),
 	OPENTRY(OP_READ_CR2, true, false, false),
 	OPENTRY(OP_READ_CR3, true, false, false),
@@ -639,6 +686,8 @@ struct opcode_desc opcode_table[] = {
 	OPENTRY(OP_CUSTOM1, true, true, true),
 	OPENTRY(OP_AVX, true, true, true),
 	OPENTRY(OP_MOVL, true, true, true),
+	OPENTRY(OP_VMRUN, true, true, false),
+	OPENTRY(OP_VMLOAD, true, true, false),
 	{},
 };
 
@@ -660,10 +709,10 @@ DEFINE_OPCODE_WRAPPER_DX(try_in_dx_ed, "in %%dx, %%eax")
 DEFINE_OPCODE_WRAPPER_DX(try_out_dx_ee, "out %%al, %%dx")
 DEFINE_OPCODE_WRAPPER_DX(try_out_dx_ef, "out %%ax, %%dx")
 
-DEFINE_OPCODE_WRAPPER_IOSTRING(try_insb, "rep insb")
-DEFINE_OPCODE_WRAPPER_IOSTRING(try_insd, "rep insl")
+DEFINE_OPCODE_WRAPPER_IOSTRING(try_insb, "insb")
+DEFINE_OPCODE_WRAPPER_IOSTRING(try_insd, "insl")
 DEFINE_OPCODE_WRAPPER_IOSTRING(try_outsb, "outsb")
-DEFINE_OPCODE_WRAPPER_IOSTRING(try_outsd, "rep outsl")
+DEFINE_OPCODE_WRAPPER_IOSTRING(try_outsd, "outsl")
 
 DEFINE_OPCODE_WRAPPER_EDX_EAX_OUT0(try_rdtsc, "rdtsc")
 DEFINE_OPCODE_WRAPPER_ECX_EDX_EAX_OUT(try_rdpmc, "rdpmc")
@@ -674,6 +723,8 @@ DEFINE_OPCODE_WRAPPER_MEMARG0(try_invlpg, "invlpg %[mem]")
 DEFINE_OPCODE_WRAPPER_WRMSR(do_wrmsr);
 
 DEFINE_OPCODE_WRAPPER_RAX(try_vmsave, "vmsave %%rax")
+DEFINE_OPCODE_WRAPPER_RAX(try_vmrun, "vmrun %%rax")
+DEFINE_OPCODE_WRAPPER_RAX(try_vmload, "vmload %%rax")
 DEFINE_OPCODE_WRAPPER_REP_MOVSQ(test_rep_movsq);
 
 DEFINE_OPCODE_WRAPPER_MEMARG0(try_sidt, "sidt %[mem]")
@@ -687,7 +738,7 @@ DEFINE_OPCODE_WRAPPER_RMPUPDATE(test_rmpupdate)
 DEFINE_OPCODE_WRAPPER_ECX_EDX_EAX_OUT0(try_rdtscp, "rdtscp")
 DEFINE_OPCODE_WRAPPER0(try_lfence, "lfence")
 
-DEFINE_OPCODE_WRAPPER_MEMARG0(try_prefetchw, "prefetchw %[mem]")
+DEFINE_OPCODE_WRAPPER_MEMARG0(try_prefetchta, "prefetchnta %[mem]")
 DEFINE_OPCODE_WRAPPER_MEMARG0(try_prefetchwt1, "prefetchwt1 %[mem]")
 
 DEFINE_OPCODE_WRAPPER0(try_read_cr0, "mov %%cr0, %%rax")
@@ -699,120 +750,343 @@ DEFINE_OPCODE_WRAPPER_RDMSR(try_rdmsr)
 
 DEFINE_OPCODE_WRAPPER_WRITE64(try_write64)
 
-static inline void ex_vpgatherdd(const int *base, const int *idx, int *out)
+static void ex_vpgatherdd(const int *base, const int *idx, int *out)
 {
-	asm volatile(
-		"vmovdqu (%[idx]), %%ymm1\n\t"
-		"vpcmpeqd %%ymm2, %%ymm2, %%ymm2\n\t"
-		"vpxor %%ymm0, %%ymm0, %%ymm0\n\t"
-		"vpgatherdd %%ymm2, (%[base],%%ymm1,4), %%ymm0\n\t"
-		"vmovdqu %%ymm0, (%[out])\n\t"
-		"vzeroupper\n\t"
-		:
-		: [base] "r"(base), [idx] "r"(idx), [out] "r"(out)
-		: "ymm0", "ymm1", "ymm2", "memory");
+    asm volatile(
+        "vmovdqu   (%[idx]), %%ymm1\n\t"      /* indices */
+        "vpcmpeqd  %%ymm2, %%ymm2, %%ymm2\n\t"/* mask = all ones */
+        "vpxor     %%ymm0, %%ymm0, %%ymm0\n\t"/* dest seed */
+        "vpgatherdd %%ymm2, (%[base],%%ymm1,4), %%ymm0\n\t"
+        "vmovdqu   %%ymm0, (%[out])\n\t"
+        "vzeroupper\n\t"
+        :
+        : [base]"r"(base), [idx]"r"(idx), [out]"r"(out)
+        : "ymm0", "ymm1", "ymm2", "memory"
+    );
 }
 
-static inline void ex_vgatherdps(const float *base, const int *idx, float *out)
+static void ex_vpgatherdd_masked(const int *base,
+                                 const int *idx,
+                                 const int *mask,
+                                 int *out)
 {
-	asm volatile(
-		"vmovdqu (%[idx]), %%ymm1\n\t"
-		"vpcmpeqd %%ymm2, %%ymm2, %%ymm2\n\t"
-		"vxorps %%ymm0, %%ymm0, %%ymm0\n\t"
-		"vgatherdps %%ymm2, (%[base],%%ymm1,4), %%ymm0\n\t"
-		"vmovups %%ymm0, (%[out])\n\t"
-		"vzeroupper\n\t"
-		:
-		: [base] "r"(base), [idx] "r"(idx), [out] "r"(out)
-		: "ymm0", "ymm1", "ymm2", "memory");
+    asm volatile(
+        "vmovdqu    (%[idx]), %%ymm1\n\t"                 // indices
+        "vmovdqu    (%[mask]), %%ymm2\n\t"                // sign bit selects active lanes
+        "vpxor      %%ymm0, %%ymm0, %%ymm0\n\t"           // seed dst = 0
+        "vpgatherdd %%ymm2, (%[base],%%ymm1,4), %%ymm0\n\t"
+        "vmovdqu    %%ymm0, (%[out])\n\t"
+        "vzeroupper\n\t"
+        :
+        : [base]"r"(base), [idx]"r"(idx), [mask]"r"(mask), [out]"r"(out)
+        : "ymm0", "ymm1", "ymm2", "memory"
+    );
 }
 
-static inline void ex_vpermd(const int *src, const int *perm, int *out)
+static void ex_vgatherdps(const float *base, const int *idx, float *out)
 {
-	asm volatile(
-		"vmovdqu (%[src]), %%ymm1\n\t"
-		"vmovdqu (%[perm]), %%ymm2\n\t"
-		"vpermd %%ymm1, %%ymm2, %%ymm0\n\t"
-		"vmovdqu %%ymm0, (%[out])\n\t"
-		"vzeroupper\n\t"
-		:
-		: [src] "r"(src), [perm] "r"(perm), [out] "r"(out)
-		: "ymm0", "ymm1", "ymm2", "memory");
+    asm volatile(
+        "vmovdqu    (%[idx]), %%ymm1\n\t"
+        "vpcmpeqd   %%ymm2, %%ymm2, %%ymm2\n\t"
+        "vxorps     %%ymm0, %%ymm0, %%ymm0\n\t"
+        "vgatherdps %%ymm2, (%[base],%%ymm1,4), %%ymm0\n\t"
+        "vmovups    %%ymm0, (%[out])\n\t"
+        "vzeroupper\n\t"
+        :
+        : [base]"r"(base), [idx]"r"(idx), [out]"r"(out)
+        : "ymm0", "ymm1", "ymm2", "memory"
+    );
 }
 
-static inline void ex_vpermps(const float *src, const int *perm, float *out)
+static void ex_vpermd(const int *src, const int *perm, int *out)
 {
-	asm volatile(
-		"vmovups (%[src]), %%ymm1\n\t"
-		"vmovdqu (%[perm]), %%ymm2\n\t"
-		"vpermps %%ymm1, %%ymm2, %%ymm0\n\t"
-		"vmovups %%ymm0, (%[out])\n\t"
-		"vzeroupper\n\t"
-		:
-		: [src] "r"(src), [perm] "r"(perm), [out] "r"(out)
-		: "ymm0", "ymm1", "ymm2", "memory");
+    asm volatile(
+        "vmovdqu (%[src]), %%ymm1\n\t"
+        "vmovdqu (%[perm]), %%ymm2\n\t"
+        "vpermd  %%ymm1, %%ymm2, %%ymm0\n\t"
+        "vmovdqu %%ymm0, (%[out])\n\t"
+        "vzeroupper\n\t"
+        :
+        : [src]"r"(src), [perm]"r"(perm), [out]"r"(out)
+        : "ymm0", "ymm1", "ymm2", "memory"
+    );
 }
 
-static inline void ex_vpshufb(const unsigned char *src,
-			      const unsigned char *ctl,
-			      unsigned char *out)
+static void ex_vpermps(const float *src, const int *perm, float *out)
 {
-	asm volatile(
-		"vmovdqu (%[src]), %%ymm1\n\t"
-		"vmovdqu (%[ctl]), %%ymm2\n\t"
-		"vpshufb %%ymm2, %%ymm1, %%ymm0\n\t"
-		"vmovdqu %%ymm0, (%[out])\n\t"
-		"vzeroupper\n\t"
-		:
-		: [src] "r"(src), [ctl] "r"(ctl), [out] "r"(out)
-		: "ymm0", "ymm1", "ymm2", "memory");
+    asm volatile(
+        "vmovups (%[src]), %%ymm1\n\t"
+        "vmovdqu (%[perm]), %%ymm2\n\t"
+        "vpermps %%ymm1, %%ymm2, %%ymm0\n\t"
+        "vmovups %%ymm0, (%[out])\n\t"
+        "vzeroupper\n\t"
+        :
+        : [src]"r"(src), [perm]"r"(perm), [out]"r"(out)
+        : "ymm0", "ymm1", "ymm2", "memory"
+    );
 }
 
-static inline void ex_vpmaskmovd_store(int *dst, const int *src, const int *mask)
+static void ex_vpshufb(const unsigned char *src,
+                              const unsigned char *ctl,
+                              unsigned char *out)
 {
-	asm volatile(
-		"vmovdqu (%[src]), %%ymm0\n\t"
-		"vmovdqu (%[mask]), %%ymm1\n\t"
-		"vpmaskmovd %%ymm0, %%ymm1, (%[dst])\n\t"
-		"vzeroupper\n\t"
-		:
-		: [dst] "r"(dst), [src] "r"(src), [mask] "r"(mask)
-		: "ymm0", "ymm1", "memory");
+    asm volatile(
+        "vmovdqu (%[src]), %%ymm1\n\t"
+        "vmovdqu (%[ctl]), %%ymm2\n\t"
+        "vpshufb %%ymm2, %%ymm1, %%ymm0\n\t"
+        "vmovdqu %%ymm0, (%[out])\n\t"
+        "vzeroupper\n\t"
+        :
+        : [src]"r"(src), [ctl]"r"(ctl), [out]"r"(out)
+        : "ymm0", "ymm1", "ymm2", "memory"
+    );
 }
 
-/*
- * This one dereferences an address (uop 102), which may be interesting in a guest.
- */
-static inline void ex_vpmaskmovps_load(const float *src, const int *mask,
-				       float *out)
+static void ex_vpmaskmovd_store(int *dst, const int *src, const int *mask)
 {
-	asm volatile(
-		"vmovdqu (%[mask]), %%ymm1\n\t"
-		"vpmaskmovd (%[src]), %%ymm1, %%ymm0\n\t"
-		"vmovups %%ymm0, (%[out])\n\t"
-		"vzeroupper\n\t"
-		:
-		: [src] "r"(src), [mask] "r"(mask), [out] "r"(out)
-		: "ymm0", "ymm1", "memory");
+    asm volatile(
+        "vmovdqu    (%[src]), %%ymm0\n\t"
+        "vmovdqu    (%[mask]), %%ymm1\n\t"
+        "vpmaskmovd %%ymm0, %%ymm1, (%[dst])\n\t"
+        "vzeroupper\n\t"
+        :
+        : [dst]"r"(dst), [src]"r"(src), [mask]"r"(mask)
+        : "ymm0", "ymm1", "memory"
+    );
 }
 
-static inline void ex_vblendvps(const float *a, const float *b,
-				const int *mask, float *out)
+//here there is an address (uop 102), might be intresting in guest
+static void ex_vpmaskmovps_load(const float *src, const int *mask, float *out)
 {
-	asm volatile(
-		"vmovups (%[a]), %%ymm1\n\t"
-		"vmovups (%[b]), %%ymm2\n\t"
-		"vmovdqu (%[m]), %%ymm3\n\t"
-		"vblendvps %%ymm3, %%ymm2, %%ymm1, %%ymm0\n\t"
-		"vmovups %%ymm0, (%[out])\n\t"
-		"vzeroupper\n\t"
-		:
-		: [a] "r"(a), [b] "r"(b), [m] "r"(mask), [out] "r"(out)
-		: "ymm0", "ymm1", "ymm2", "ymm3", "memory");
+    asm volatile(
+        "vmovdqu    (%[mask]), %%ymm1\n\t"
+        "vpmaskmovd (%[src]), %%ymm1, %%ymm0\n\t"
+        "vmovups    %%ymm0, (%[out])\n\t"
+        "vzeroupper\n\t"
+        :
+        : [src]"r"(src), [mask]"r"(mask), [out]"r"(out)
+        : "ymm0", "ymm1", "memory"
+    );
 }
 
-static const int gather_base[8] = { 0, 4, 8, 12, 16, 20, 24, 28 };
-static const int mask_all_ones[8] = { -1, -1, -1, -1, -1, -1, -1, -1 };
+static void ex_vblendvps(const float *a, const float *b, const int *mask, float *out)
+{
+    asm volatile(
+        "vmovups   (%[a]), %%ymm1\n\t"
+        "vmovups   (%[b]), %%ymm2\n\t"
+        "vmovdqu   (%[m]), %%ymm3\n\t"
+        "vblendvps %%ymm3, %%ymm2, %%ymm1, %%ymm0\n\t"
+        "vmovups   %%ymm0, (%[out])\n\t"
+        "vzeroupper\n\t"
+        :
+        : [a]"r"(a), [b]"r"(b), [m]"r"(mask), [out]"r"(out)
+        : "ymm0", "ymm1", "ymm2", "ymm3", "memory"
+    );
+}
+
+static void ex_vpmulld(const int *a, const int *b, int *out)
+{
+    asm volatile(
+        "vmovdqu (%[a]), %%ymm1\n\t"
+        "vmovdqu (%[b]), %%ymm2\n\t"
+        "vpmulld %%ymm2, %%ymm1, %%ymm0\n\t"
+        "vmovdqu %%ymm0, (%[out])\n\t"
+        "vzeroupper\n\t"
+        :
+        : [a]"r"(a), [b]"r"(b), [out]"r"(out)
+        : "ymm0", "ymm1", "ymm2", "memory"
+    );
+}
+
+static void ex_vpmuludq(const unsigned int *a,
+                               const unsigned int *b,
+                               unsigned long long *out)
+{
+    asm volatile(
+        "vmovdqu   (%[a]), %%ymm1\n\t"
+        "vmovdqu   (%[b]), %%ymm2\n\t"
+        "vpmuludq  %%ymm2, %%ymm1, %%ymm0\n\t"
+        "vmovdqu   %%ymm0, (%[out])\n\t"
+        "vzeroupper\n\t"
+        :
+        : [a]"r"(a), [b]"r"(b), [out]"r"(out)
+        : "ymm0", "ymm1", "ymm2", "memory"
+    );
+}
+
+static void ex_vpmaddubsw(const unsigned char *a,
+                                 const signed char *b,
+                                 short *out)
+{
+    asm volatile(
+        "vmovdqu     (%[a]), %%ymm1\n\t"
+        "vmovdqu     (%[b]), %%ymm2\n\t"
+        "vpmaddubsw  %%ymm2, %%ymm1, %%ymm0\n\t"
+        "vmovdqu     %%ymm0, (%[out])\n\t"
+        "vzeroupper\n\t"
+        :
+        : [a]"r"(a), [b]"r"(b), [out]"r"(out)
+        : "ymm0", "ymm1", "ymm2", "memory"
+    );
+}
+
+static void ex_vpmaddwd(const short *a, const short *b, int *out)
+{
+    asm volatile(
+        "vmovdqu   (%[a]), %%ymm1\n\t"
+        "vmovdqu   (%[b]), %%ymm2\n\t"
+        "vpmaddwd  %%ymm2, %%ymm1, %%ymm0\n\t"
+        "vmovdqu   %%ymm0, (%[out])\n\t"
+        "vzeroupper\n\t"
+        :
+        : [a]"r"(a), [b]"r"(b), [out]"r"(out)
+        : "ymm0", "ymm1", "ymm2", "memory"
+    );
+}
+
+static void ex_vfmaddsub231ps(const float *a,
+                                     const float *b,
+                                     const float *c,
+                                     float *out)
+{
+    asm volatile(
+        "vmovups            (%[a]), %%ymm0\n\t"
+        "vmovups            (%[b]), %%ymm1\n\t"
+        "vmovups            (%[c]), %%ymm2\n\t"
+        "vfmaddsub231ps     %%ymm2, %%ymm1, %%ymm0\n\t"
+        "vmovups            %%ymm0, (%[out])\n\t"
+        "vzeroupper\n\t"
+        :
+        : [a]"r"(a), [b]"r"(b), [c]"r"(c), [out]"r"(out)
+        : "ymm0", "ymm1", "ymm2", "memory"
+    );
+}
+
+static void ex_vperm2i128(const int *a, const int *b, int *out)
+{
+    asm volatile(
+        "vmovdqu    (%[a]), %%ymm1\n\t"
+        "vmovdqu    (%[b]), %%ymm2\n\t"
+        "vperm2i128 $0x21, %%ymm2, %%ymm1, %%ymm0\n\t"
+        "vmovdqu    %%ymm0, (%[out])\n\t"
+        "vzeroupper\n\t"
+        :
+        : [a]"r"(a), [b]"r"(b), [out]"r"(out)
+        : "ymm0", "ymm1", "ymm2", "memory"
+    );
+}
+
+static void ex_vpsllvd(const int *src, const int *counts, int *out)
+{
+    asm volatile(
+        "vmovdqu  (%[src]), %%ymm1\n\t"
+        "vmovdqu  (%[cnt]), %%ymm2\n\t"
+        "vpsllvd  %%ymm2, %%ymm1, %%ymm0\n\t"
+        "vmovdqu  %%ymm0, (%[out])\n\t"
+        "vzeroupper\n\t"
+        :
+        : [src]"r"(src), [cnt]"r"(counts), [out]"r"(out)
+        : "ymm0", "ymm1", "ymm2", "memory"
+    );
+}
+
+static void ex_vpalignr(const unsigned char *a,
+                               const unsigned char *b,
+                               unsigned char *out)
+{
+    asm volatile(
+        "vmovdqu   (%[a]), %%ymm1\n\t"
+        "vmovdqu   (%[b]), %%ymm2\n\t"
+        "vpalignr  $8, %%ymm2, %%ymm1, %%ymm0\n\t"
+        "vmovdqu   %%ymm0, (%[out])\n\t"
+        "vzeroupper\n\t"
+        :
+        : [a]"r"(a), [b]"r"(b), [out]"r"(out)
+        : "ymm0", "ymm1", "ymm2", "memory"
+    );
+}
+
+static void ex_vgatherdps_masked(const float *base,
+                                 const int *idx,
+                                 const int *mask,
+                                 float *out)
+{
+    asm volatile(
+        "vmovdqu    (%[idx]), %%ymm1\n\t"
+        "vmovdqu    (%[mask]), %%ymm2\n\t"
+        "vxorps     %%ymm0, %%ymm0, %%ymm0\n\t"
+        "vgatherdps %%ymm2, (%[base],%%ymm1,4), %%ymm0\n\t"
+        "vmovups    %%ymm0, (%[out])\n\t"
+        "vzeroupper\n\t"
+        :
+        : [base]"r"(base), [idx]"r"(idx), [mask]"r"(mask), [out]"r"(out)
+        : "ymm0", "ymm1", "ymm2", "memory"
+    );
+}
+
+static __always_inline void flush_cache_line_fenced(const void *addr)
+{
+    asm volatile("mfence\n\t" ::: "memory");
+    asm volatile("clflush (%0)\n\t" : : "r"(addr) : "memory");
+    asm volatile("mfence\n\t" ::: "memory");
+}
+
+static void dump_i32(const char *name, const int *v, int n)
+{
+    char buf[256];
+    int len = 0;
+
+    len += scnprintf(buf + len, sizeof(buf) - len, "%s: [", name);
+
+    for (int i = 0; i < n; i++) {
+        len += scnprintf(buf + len, sizeof(buf) - len,
+                         "%d%s",
+                         v[i],
+                         (i == n - 1) ? "" : ", ");
+    }
+
+    len += scnprintf(buf + len, sizeof(buf) - len, "]");
+
+    pr_info("%s\n", buf);
+}
+static void dump_f32(const char *name, const float *v, int n)
+{
+    char buf[256];
+    int len = 0;
+    int i;
+
+    len += scnprintf(buf + len, sizeof(buf) - len, "%s: [", name);
+
+    for (i = 0; i < n; i++) {
+        int ipart, frac;
+        float x = v[i];
+
+        /* print 3 digits after decimal point */
+        ipart = (int)x;
+        frac = (int)((x - (float)ipart) * 1000.0f);
+
+        /* keep the sign on the integer part only */
+        if (frac < 0)
+            frac = -frac;
+
+        len += scnprintf(buf + len, sizeof(buf) - len,
+                         "%d.%03d%s",
+                         ipart,
+                         frac,
+                         (i == n - 1) ? "" : ", ");
+    }
+
+    len += scnprintf(buf + len, sizeof(buf) - len, "]");
+
+    pr_info("%s\n", buf);
+}
+
+static const int gather_base[8] = {0, 16 * 1, 16 * 2, 16 * 3, 16 * 4, 16 * 5, 16 * 6, 16 * 7};
+static const int mask_all_ones[8] = { -1, 1, -1, 1, -1, -1, -1, 1};
+
+static inline void prefetcht0_strict(const void *addr) {
+    asm volatile("prefetcht0 (%0)" :: "r"(addr) : "memory");
+}
 
 static int run_avx(u64 arg0, u64 arg1, struct opcode_result *out)
 {
@@ -822,12 +1096,29 @@ static int run_avx(u64 arg0, u64 arg1, struct opcode_result *out)
 		out->rip = 0;
 	}
 
+    static int print_mask = 1;
+    if(print_mask)
+    {
+		pr_info("gather_base va: %px\n", gather_base);
+        pr_info("mask_all_ones va: %px\n", mask_all_ones);
+        print_mask = 0;
+    }
+
 	kernel_fpu_begin();
-	ex_vblendvps((const float *)arg0,
-		     (const float *)(arg0 + 128),
-		     gather_base,
-		     (float *)arg1);
+	ex_vpgatherdd_masked((const int *)arg0,
+			gather_base,
+            mask_all_ones,
+		    (int *)arg1);
 	kernel_fpu_end();
+
+    static int print_out = 1;
+	print_out++;
+    if (print_out>200) {
+        dump_i32("out ", (const int *)arg1, 8);
+		u64 time =  measure_access_time((uint8_t *)arg0 + gather_base[7] * 4);
+		pr_info("Access time for %px: %llu cycles\n", (uint8_t *)arg0 + gather_base[7] * 4, time);
+        print_out = 0;
+    }
 
 	return 0;
 }
@@ -900,9 +1191,9 @@ int run_selected_opcode(enum opcode_id id, u64 arg0, u64 arg1,
 		return try_lfence(arg0, arg1, out);
 	case OP_RDTSCP:
 		return try_rdtscp(arg0, arg1, out);
-	case OP_PREFETCHW:
-		return try_prefetchw(arg0, arg1, out);
-	case OP_PREFETCHWT1:
+	case OP_PREFETCHNTA:
+		return try_prefetchta(arg0, arg1, out);
+	case OP_PREFETCHNTAT1:
 		return try_prefetchwt1(arg0, arg1, out);
 	case OP_READ_CR0:
 		return try_read_cr0(arg0, arg1, out);
@@ -918,6 +1209,10 @@ int run_selected_opcode(enum opcode_id id, u64 arg0, u64 arg1,
 		return run_avx(arg0, arg1, out);
 	case OP_MOVL:
 		return try_write64(arg0, arg1, out);
+	case OP_VMRUN:
+		return try_vmrun(arg0, arg1, out);
+	case OP_VMLOAD:
+		return try_vmload(arg0, arg1, out);
 	default:
 		if (out) {
 			out->rc = -1;

@@ -75,3 +75,4 @@ unsigned long * get_pte_address(unsigned long virt_addr);
 void map_physical_to_virtual_4lvl(unsigned long phys_addr, unsigned long virt_addr);
 unsigned long get_physical_from_virtual_4lvl(unsigned long virt_addr);
 void invlpgb_flush(unsigned long addr);
+void get_asid_4lvl(unsigned long virt_addr);

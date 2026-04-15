@@ -365,9 +365,9 @@ SYM_FUNC_START(__svm_sev_es_vcpu_run)
 	RESTORE_GUEST_SPEC_CTRL_BODY
 	RESTORE_HOST_SPEC_CTRL_BODY %sil
 
-3:	cmpb $0, kvm_rebooting(%rip)
-	jne 2b
-	ud2
+	.section .fixup, "ax"
+3:	jmp 2b
+	.previous
 
 	_ASM_EXTABLE(1b, 3b)
 

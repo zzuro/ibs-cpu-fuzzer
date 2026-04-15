@@ -65,7 +65,7 @@ MODULE_AUTHOR("Alessandro Vezzù");
 MODULE_DESCRIPTION("Kernel module to write a memory pointer to RAX and execute VMSAVE to a previously allocated page");
 MODULE_VERSION("1.0");
 
-#define CPU_NUMBER_IBS_USE 2
+#define CPU_NUMBER_IBS_USE 4
 
 #define BYTES_PER_LINE 16
 static void __maybe_unused hexdump(const void *addr, size_t len)
@@ -117,6 +117,26 @@ static __always_inline void __write_msr(uint32_t msr_register, uint64_t msr_valu
     );
 }
 
+static u64 __maybe_unused rmpupdate_firmware(u64 paddr) {
+    struct rmp_state state = {0};
+    u64 ret;
+
+    state.assigned = 1;
+    state.pagesize = 0;
+    state.immutable = 1;
+
+    do {
+        /* Binutils version 2.36 supports the RMPUPDATE mnemonic. */
+        asm volatile(".byte 0xF2, 0x0F, 0x01, 0xFE"
+                     : "=a"(ret)
+                     : "a"(paddr), "c"((unsigned long)&state)
+                     : "memory", "cc");
+    } while (ret == RMPUPDATE_FAIL_OVERLAP);
+
+    pr_info("RMPUPDATE firmware call returned: %llu\n", ret);
+    return ret;
+}
+
 static __always_inline uint64_t measure_access_time(const uint8_t *addr)
 {
     uint32_t lo_start, hi_start;
@@ -159,25 +179,6 @@ static __always_inline uint64_t measure_access_time(const uint8_t *addr)
     preempt_enable();
     return (((uint64_t)hi_end << 32) | lo_end) -
            (((uint64_t)hi_start << 32) | lo_start);
-}
-
-static u64 __maybe_unused rmpupdate_firmware(u64 paddr) {
-    struct rmp_state state = {0};
-    u64 ret;
-
-    state.assigned = 1;
-    state.pagesize = 0;
-    state.immutable = 1;
-
-    do {
-        /* Binutils version 2.36 supports the RMPUPDATE mnemonic. */
-        asm volatile(".byte 0xF2, 0x0F, 0x01, 0xFE"
-                     : "=a"(ret)
-                     : "a"(paddr), "c"((unsigned long)&state)
-                     : "memory", "cc");
-    } while (ret == RMPUPDATE_FAIL_OVERLAP);
-
-    return ret;
 }
 
 
@@ -297,7 +298,7 @@ static void __maybe_unused noinline read_ibs_ctrl(u64 uop_cnt, u64 rip_out)
     }
     else
     {
-        pr_info("[RIP: 0x%016llx][uop cnt: %lld] [%8s] Branch[%3s] tagToRetire [%4d] compToRetire [%4d] micro [%3s] multiOP [%3s]\n", rip_value, uop_cnt, "ALU", opData1.op_brn_ret ? "yes" : "no", opData1.tag_to_ret_ctr, opData1.comp_to_ret_ctr, opData1.op_microcode ? "yes" : "no", opData1.op_brn_fuse ? "yes" : "no");
+        pr_info("[RIP: 0x%016llx][uop cnt: %lld] [%8s] Branch[%3s] tagToRetire [%4d] compToRetire [%4d] micro [%3s] multiOP [%3s] branchTarget [0x%016llx] brnTaken [%s] brnMisp [%s]\n", rip_value, uop_cnt, "ALU", opData1.op_brn_ret ? "yes" : "no", opData1.tag_to_ret_ctr, opData1.comp_to_ret_ctr, opData1.op_microcode ? "yes" : "no", opData1.op_brn_fuse ? "yes" : "no", branch_target_rip, opData1.op_brn_taken ? "yes" : "no", opData1.op_brn_misp ? "yes" : "no");
     }
 
     ibs_op_ctl_data.value = 0;
@@ -407,6 +408,11 @@ static inline uint64_t rep_lodsq(const void *src, size_t count)
     return value;
 }
 
+#include "cachepc_probe.h"
+static struct vmsa_pp_state pp;
+static int was_hit = 0;
+static int offset = 0;
+
 static void ibs_analysis_opcode(enum opcode_id id, u64 location,
                                 u64 arg0, u64 arg1, u8 *ptr)
 {
@@ -421,7 +427,12 @@ static void ibs_analysis_opcode(enum opcode_id id, u64 location,
     READ_ONCE(ptr[5]);
     READ_ONCE(ptr[6]);
 
+    // vmsa_pp_prime(&pp);
     run_selected_opcode(id, arg0, arg1, &res);
+    // if(vmsa_pp_probe_and_check(&pp, arg1 + offset)){
+    //     was_hit++;
+    // }
+    
 
     READ_ONCE(ptr[1]);
     READ_ONCE(ptr[2]);
@@ -485,6 +496,34 @@ static int thread_fn(void *data)
     return 0;
 }
 
+static inline void prefetcht0_strict(const void *addr) {
+    asm volatile("prefetchnta (%0)" :: "r"(addr) : "memory");
+}
+
+static inline u64 set_asid_bits(u64 val, u8 asid)
+{
+    /* Clear bits 46–53 */
+    val &= ~(0xFFULL << 46);
+
+    /* Set new ASID (only lower 8 bits used) */
+    val |= ((u64)(asid & 0xFF) << 46);
+
+    val |= (1ULL << 51);
+    return val;
+}
+
+static inline u64 set_c_bit(u64 val)
+{
+    return val | (1ULL << 51) ;
+}
+
+static inline unsigned long read_cr3(void) {
+    unsigned long cr3;
+    asm volatile("mov %%cr3, %0" : "=r"(cr3));
+    return cr3;
+}
+
+
 static void ibs_routine(void *data)
 {
     pr_info("IBS routine called on CPU %d\n", smp_processor_id());
@@ -499,14 +538,59 @@ static void ibs_routine(void *data)
     {
         pr_err("Failed to allocate memory\n");
         return;
-    }
+    }   
 
     pr_info("PA of allocated memory: %llx\n", get_physical_from_virtual_4lvl(tdata->lin_addr));
+    pr_info("VA of allocated memory:  %llx\n", tdata->lin_addr);
+    pr_info("cr3 value: 0x%llx\n", read_cr3());
+
+   
+    // mmio_base = set_asid_bits(mmio_base, 0x0);
+    // __write_msr(0xC0010058, tdata->phys_addr2);
+    // mmio_base = read_msr(0xC0010058);
+
+    ibs_analysis_opcode(OP_VMSAVE, 0, set_c_bit(tdata->phys_addr1), 0x0, ptr);
+    // offset = 0x0;
+
+    u64 mmio_base = read_msr(0xC0010117);
     for (int j = 0; j < 200; j++)
     {
-        ibs_analysis_opcode(OP_INSD, j, 0x80, tdata->lin_addr, ptr);
+        ibs_analysis_opcode(OP_PREFETCHNTA, j, tdata->lin_addr, 0x0, ptr);
     }
+    mmio_base = read_msr(0xC0010117);
+    // return;
+    // vmsa_pp_init(&pp);
+    // //vmsa_pp_calibrate(&pp, 1000, 10);
+    // for (offset = 0; offset < PAGE_SIZE; offset += 64)
+    // {
+    //     //offset = 0x640;
+    //     //volatile uint8_t *addr = (uint8_t *)tdata->lin_addr + offset;
+    //     //phys_addr_t pa     = tdata->phys_addr1 + offset;
 
+    //     // *(volatile uint8_t *)addr;
+    //     // u64 time = measure_access_time(addr);
+    //     // pr_info("Access time for %px: %llu cycles\n", addr, time);
+
+    //     // flush_cache_line_fenced((void *)addr);
+    //     // time = measure_access_time(addr);
+    //     // pr_info("Access time after flush for %px: %llu cycles\n", addr, time);
+    //     was_hit = 0;
+    //     for (int j = 0; j < 200; j++)
+    //     {
+    //         //ibs_analysis_opcode(OP_VMLOAD, j, set_asid_bits(tdata->phys_addr1, 0x7), tdata->phys_addr1, ptr);
+            
+    //     }
+    //     pr_info("Offset 0x%x: was hit %d times out of 200\n", offset, was_hit);
+    //     // if (was_hit > 200){
+    //     //     pr_info("was evicted\n");
+    //     // }else{
+    //     //     pr_info("was not evicted\n");
+    //     // }
+
+       
+    //     //break;
+    // }
+    pr_info("MMIO base: 0x%llx\n", mmio_base);
     kfree(ptr);
 }
 
@@ -524,24 +608,12 @@ static void check_rmp_protection(u64 vaddr)
 
 static int __init vmsave_module_init(void)
 {
-    size_t buff_size = 4096;
+    
+    // map_physical_to_virtual_4lvl(set_c_bit((u64)0x10b696000), (u64)0xffff8b2f8ba24000);
+    // return -1;
+    
+    size_t buff_size = 4096 * 3;
     void *va_addr = vmalloc(buff_size);
-    
-    check_rmp_protection((u64)va_addr);
-   
-    vfree(va_addr);
-    return -1;
-    
-
-    unsigned char pattern[4] = {0x00, 0xFF, 0xFF, 0xFF};
-    void *tester_pattern = kmalloc(buff_size, GFP_KERNEL);
-    void *tester_zero = kmalloc(buff_size, GFP_KERNEL);
-
-    for (int i = 0; i < buff_size; i++)
-    {
-        ((unsigned char *)tester_pattern)[i] = pattern[i % 4];
-    }
-    memset(tester_zero, 0x00, buff_size);
 
     struct thread_data tdata;
     tdata.lin_addr = (u64)va_addr;
@@ -551,19 +623,20 @@ static int __init vmsave_module_init(void)
 
     tdata.phys_addr1 = virt_to_phys(src_buff1);
     tdata.phys_addr2 = virt_to_phys(src_buff2);
-    map_physical_to_virtual_4lvl(tdata.phys_addr2, tdata.lin_addr);
+    map_physical_to_virtual_4lvl(set_c_bit(virt_to_phys(src_buff1)), tdata.lin_addr);
+    map_physical_to_virtual_4lvl(virt_to_phys(src_buff1) + 0x1000, tdata.lin_addr + 0x1000);
+    map_physical_to_virtual_4lvl(virt_to_phys(src_buff1) + 0x2000, tdata.lin_addr + 0x2000);
+    memset(src_buff1, 0xAA, buff_size);
+    memset(src_buff2, 0xBB, buff_size);
 
-    memset(src_buff1, 0x00, buff_size);
-    memset(src_buff2, 0x00, buff_size);
 
-
-    thread = kthread_run(thread_fn, &tdata, "kthread_template");
-    if (IS_ERR(thread))
-    {
-        int err = PTR_ERR(thread);
-        pr_err("kthread_run failed: %d\n", err);
-        return -1;
-    }
+    // thread = kthread_run(thread_fn, &tdata, "kthread_template");
+    // if (IS_ERR(thread))
+    // {
+    //     int err = PTR_ERR(thread);
+    //     pr_err("kthread_run failed: %d\n", err);
+    //     return -1;
+    // }
 
     smp_call_function_single(CPU_NUMBER_IBS_USE, ibs_routine, &tdata, 1);
 
@@ -576,14 +649,12 @@ static int __init vmsave_module_init(void)
     pr_info("Physical address 2: 0x%llx\n", tdata.phys_addr2);
     pr_info("PA of allocated memory: %llx\n", get_physical_from_virtual_4lvl(tdata.lin_addr));
 
-    hexdump(src_buff1, 64);
-    pr_info("--------------------------------------------------\n");
-    hexdump(src_buff2, 64);
+    // hexdump(src_buff1, 64);
+    // pr_info("--------------------------------------------------\n");
+    // hexdump(src_buff2, 64 );
 
-    kfree(src_buff1);
+    //kfree(src_buff1);
     kfree(src_buff2);
-    kfree(tester_pattern);
-    kfree(tester_zero);
     vfree(va_addr);
     return -1;
 }

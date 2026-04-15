@@ -39,8 +39,8 @@ enum opcode_id {
 	OP_RMPUPDATE,
 	OP_LFENCE,
 	OP_RDTSCP,
-	OP_PREFETCHW,
-	OP_PREFETCHWT1,
+	OP_PREFETCHNTA,
+	OP_PREFETCHNTAT1,
 	OP_READ_CR0,
 	OP_READ_CR2,
 	OP_READ_CR3,
@@ -50,6 +50,8 @@ enum opcode_id {
 	OP_AVX,
 	OP_MOVL,
 	OP_MAX,
+	OP_VMRUN,
+	OP_VMLOAD
 };
 
 struct opcode_desc {

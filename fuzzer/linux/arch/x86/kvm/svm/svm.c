@@ -1195,7 +1195,7 @@ static void init_vmcb(struct kvm_vcpu *vcpu)
 		/* Setup VMCB for Nested Paging */
 		control->nested_ctl |= SVM_NESTED_CTL_NP_ENABLE;
 		svm_clr_intercept(svm, INTERCEPT_INVLPG);
-		//clr_exception_intercept(svm, PF_VECTOR); we need to intercept PF
+		clr_exception_intercept(svm, PF_VECTOR); //we need to intercept PF
 		svm_clr_intercept(svm, INTERCEPT_CR3_READ);
 		svm_clr_intercept(svm, INTERCEPT_CR3_WRITE);
 		save->g_pat = vcpu->arch.pat;
@@ -1888,6 +1888,9 @@ static void new_asid(struct vcpu_svm *svm, struct svm_cpu_data *sd)
 
 	svm->current_vmcb->asid_generation = sd->asid_generation;
 	svm->asid = sd->next_asid++;
+
+	pr_info("Assigning ASID 0x%x to VCPU %d (generation %llu)\n",
+		svm->asid, svm->vcpu.vcpu_id, sd->asid_generation);
 }
 
 static void svm_set_dr6(struct kvm_vcpu *vcpu, unsigned long value)
@@ -1940,7 +1943,7 @@ static uint64_t REGISTER_VALUE = 0x9900000000;
 #define GUEST_PHYS_ADDR_END 	0x005FFFFF
 #define GUEST_PHYS_PAGE_SIZE 	((GUEST_PHYS_ADDR_END - GUEST_PHYS_ADDR_START + 1)/PAGE_SIZE)
 
-#define MAX_INSTRUCTION_COUNT 2500
+#define MAX_INSTRUCTION_COUNT 6000
 #define PER_INSTRUCTION_COUNTER 7
 
 static DEFINE_SPINLOCK(setup_lock);
@@ -2008,7 +2011,7 @@ static void __maybe_unused dump_instruction(void)
 	pr_cont("\n");
 }
 
-static void save_reg_state(struct kvm_vcpu *vcpu)
+static void __maybe_unused save_reg_state(struct kvm_vcpu *vcpu)
 {
 	int cpu = smp_processor_id();
 	cpu_state_t*fuzz_state = &global_fuzz_state.cpu_state[cpu];
@@ -2399,6 +2402,13 @@ redo:
 
 static void setup_fuzzer(struct kvm_vcpu *vcpu)
 {
+	pr_info("[Fuzzer] vcpu va: %llx, vcpu pa: %llx\n", (u64)vcpu, (u64)virt_to_phys(vcpu));
+	pr_info("[Fuzzer] vm va: %llx, vm pa: %llx\n", (u64)vcpu->kvm, (u64)virt_to_phys(vcpu->kvm));
+	pr_info("[Fuzzer] arch va: %llx, vmmcb pa: %llx\n", (u64)&vcpu->arch, (u64)virt_to_phys(&vcpu->arch));
+	pr_info("[Fuzzer] vmsa va: %llx, run pa: %llx\n", (u64)to_svm(vcpu)->sev_es.vmsa, (u64)virt_to_phys(to_svm(vcpu)->sev_es.vmsa));
+	pr_info("[Fuzzer] vmcb va: %llx, vmmcb pa: %llx\n", (u64)to_svm(vcpu)->current_vmcb, (u64)virt_to_phys(to_svm(vcpu)->current_vmcb));
+	pr_info("[Fuzzer] svm state va: %llx, svm state pa: %llx\n", (u64)to_svm(vcpu), (u64)virt_to_phys(to_svm(vcpu)));
+	
 	int cpu = smp_processor_id();
 	cpu_state_t* fuzz_state = &global_fuzz_state.cpu_state[cpu];
 
@@ -2468,7 +2478,6 @@ static void setup_fuzzer(struct kvm_vcpu *vcpu)
 	if(filter_instruction()) {
 		move_next_instruction();
 	}
-
 }
 
 static void fetch_microop(int exit_code, struct kvm_vcpu *vcpu)
@@ -4204,6 +4213,7 @@ static int pre_svm_run(struct kvm_vcpu *vcpu)
 		return pre_sev_run(svm, vcpu->cpu);
 
 	/* FIXME: handle wraparound of asid_generation */
+	pr_info("pre_svm_run was called \n");
 	if (svm->current_vmcb->asid_generation != sd->asid_generation)
 		new_asid(svm, sd);
 
@@ -4783,45 +4793,44 @@ static fastpath_t svm_exit_handlers_fastpath(struct kvm_vcpu *vcpu)
 	return EXIT_FASTPATH_NONE;
 }
 
-#define IBS_OP_CTL 0xc0011033
-#define IBS_OP_RIP 0xc0011034
-#define IBS_OP_DATA 0xc0011035
-#define IBS_OP_DATA2 0xc0011036
-#define IBS_OP_DATA3 0xc0011037
-#define IBS_DC_LIN_AD 0xc0011038
-#define IBS_DC_PHYS_AD 0xc0011039
-#define IBS_CONTROL 0xc001103a
-#define BP_IBSTGT_RIP 0xc001103b
+#define IBS_OP_CTL				0xc0011033
+#define IBS_OP_RIP				0xc0011034
+#define IBS_OP_DATA				0xc0011035
+#define IBS_OP_DATA2			0xc0011036
+#define IBS_OP_DATA3			0xc0011037
+#define IBS_DC_LIN_AD			0xc0011038
+#define IBS_DC_PHYS_AD			0xc0011039
+#define IBS_CONTROL				0xc001103a
+#define BP_IBSTGT_RIP			0xc001103b
 
-#define IBS_LVT_OFFSET_VALID (1ULL << 8)
-#define IBS_LVT_OFFSET_MASK (0xf)
+#define IBS_LVT_OFFSET_VALID	(1ULL << 8)
+#define IBS_LVT_OFFSET_MASK		(0xf)
 
 // Function to read an MSR
-static __always_inline uint64_t __read_msr(uint32_t msr_register)
-{
-	uint64_t msr_value;
-	uint32_t low, high;
+static __always_inline uint64_t __read_msr(uint32_t msr_register) {
+    uint64_t msr_value;
+    uint32_t low, high;
 
-	asm volatile("rdmsr"
-		     : "=a"(low), "=d"(high) // Output operands
-		     : "c"(msr_register) // Input operand
-	);
+    asm volatile(
+        "rdmsr"
+        : "=a"(low), "=d"(high)  // Output operands
+        : "c"(msr_register)      // Input operand
+    );
 
-	msr_value = ((uint64_t)high << 32) | low;
-	return msr_value;
+    msr_value = ((uint64_t)high << 32) | low;
+    return msr_value;
 }
 
 // Function to write an MSR
-static __always_inline void __write_msr(uint32_t msr_register,
-					uint64_t msr_value)
-{
-	uint32_t low = (uint32_t)msr_value;
-	uint32_t high = (uint32_t)(msr_value >> 32);
+static __always_inline void __write_msr(uint32_t msr_register, uint64_t msr_value) {
+    uint32_t low = (uint32_t)msr_value;
+    uint32_t high = (uint32_t)(msr_value >> 32);
 
-	asm volatile("wrmsr"
-		     : // No output operands
-		     : "c"(msr_register), "a"(low), "d"(high) // Input operands
-	);
+    asm volatile(
+        "wrmsr"
+        :                                         // No output operands
+        : "c"(msr_register), "a"(low), "d"(high)  // Input operands
+    );
 }
 // Read the LVT offset from IBSCTL (otherwise, return EINVAL).
 static inline u64 get_ibs_lvt_offset(void)
@@ -4835,69 +4844,89 @@ static inline u64 get_ibs_lvt_offset(void)
 	return ibs_control & IBS_LVT_OFFSET_MASK;
 }
 
+typedef union ibs_opt_ctrl {
+    struct {
+        u64 IbsOpMaxCnt2 : 16;    // 15:0
+        u64 IbsOpL3MissOnly : 1;  // 16
+        u64 IbsOpEn : 1;          // 17
+        u64 IbsOpValid : 1;       // 18
+        u64 IbsOpCntCtl : 1;      // 19
+        u64 IbsOpMaxCnt1 : 7;     // 26:20
+        u64 rsvd2 : 5;            // 31:27
+        u64 IbsOpCurCnt : 27;     // 58:32
+        u64 rsvd1 : 5;            // 63:59
+    };
+    u64 value;
+} ibs_opt_ctrl;
 
-char *memwithStrings[] = { "0 ", "1 ", "2 ", "4 ", "8 ", "16", "32", "64", "?8",
-			   "?9", "?A", "?B", "?C", "?D", "?C", "?E", "?F" };
+char *memwithStrings[] = {"0 ","1 ", "2 ", "4 ", "8 ", "16", "32", "64", "?8", "?9", "?A", "?B", "?C", "?D", "?C", "?E", "?F"};
 
-static void __maybe_unused write_ibs_ctrl(u64 instruction_offset)
-{
-	union ibs_op_ctl ibs_op_ctl_data;
-	ibs_op_ctl_data.val = __read_msr(IBS_OP_CTL);
+static void __maybe_unused write_ibs_ctrl(u64 instruction_offset) {
+    ibs_opt_ctrl ibs_op_ctl_data;
+    ibs_op_ctl_data.value = __read_msr(IBS_OP_CTL);
 
-	// zero everything
-	ibs_op_ctl_data.val = 0;
+    // zero everything
+    ibs_op_ctl_data.value = 0;
 
-	ibs_op_ctl_data.opmaxcnt_ext = (1 << 5);
-	ibs_op_ctl_data.opcurcnt = (1 << 25) - instruction_offset;
-	ibs_op_ctl_data.cnt_ctl = 1;
-	ibs_op_ctl_data.op_en = 1;
-	__write_msr(IBS_OP_CTL, ibs_op_ctl_data.val);
+    // ibs_op_ctl_data.IbsOpMaxCnt2 = (1 << 15);
+    ibs_op_ctl_data.IbsOpMaxCnt1 = (1 << 5);
+    ibs_op_ctl_data.IbsOpCurCnt = (1 << 25) - instruction_offset;
+    ibs_op_ctl_data.IbsOpCntCtl = 1;
+    ibs_op_ctl_data.IbsOpEn = 1;
+    __write_msr(IBS_OP_CTL, ibs_op_ctl_data.value);
 }
 
+/*
 
+                pr_info("[%6s%s] 0x%016llx (v=0x%016llx) UC[%s] WC[%s] CacheMiss [%s] tagToRetire [%4d] compToRetire [%4d] micro [%3s] multiOP [%3s]\n", opData3.IbsOpLd ? "load" : "store", memwithStrings[opData3.IbsOpMemWidth], phys_addr, lin_addr,
+                        opData3.IbsDcWcMemAcc ? "+" : "-", opData3.IbsDcUcMemAcc ? "+" : "-", opData3.IbsDcMiss ? "+" : "-", opData1.IbsTagToRetCtr, opData1.IbsCompToRetCtr, opData1.IbsOpMicrocode ? "yes" : "no", opData1.IbsOpFuse ? "yes" : "no");
+*/
 
-static void __maybe_unused read_ibs_ctrl(u64 uop_cnt, struct kvm_vcpu *vcpu) 
-{
-	
-	save_reg_state(vcpu);
-	union ibs_op_ctl ibs_op_ctl_data;
-	ibs_op_ctl_data.val = __read_msr(IBS_OP_CTL);
+static void __maybe_unused read_ibs_ctrl(u64 uop_cnt) {
+    ibs_opt_ctrl ibs_op_ctl_data;
+    ibs_op_ctl_data.value = __read_msr(IBS_OP_CTL);
 
-	u64 rip_value;
-	rip_value = __read_msr(IBS_OP_RIP);
+    // pr_info("IBS_OP_CTL valid\n");
 
-	union ibs_op_data opData1;
-	opData1.val = __read_msr(IBS_OP_DATA);
+    u64 rip_value;
+    rip_value = __read_msr(IBS_OP_RIP);
+    // pr_info("IBS_OP_RIP: %llx\n", rip_value);
 
-	union ibs_op_data3 opData3;
-	opData3.val = __read_msr(IBS_OP_DATA3);
+    // pr_info("Opcode: %llx\n", *(u64 *)rip_value);
 
-	u64 lin_addr = __read_msr(IBS_DC_LIN_AD);
-	u64 phys_addr = __read_msr(IBS_DC_PHYS_AD);
+    union ibs_op_data opData1;
+    opData1.val = __read_msr(IBS_OP_DATA);
 
-	u64 branch_target_rip = __read_msr(BP_IBSTGT_RIP);
+    union ibs_op_data3 opData3;
+    opData3.val = __read_msr(IBS_OP_DATA3);
 
-	int cpu = smp_processor_id();
-	cpu_state_t* fuzz_state = &global_fuzz_state.cpu_state[cpu];
+    u64 lin_addr = __read_msr(IBS_DC_LIN_AD);
+    u64 phys_addr = __read_msr(IBS_DC_PHYS_AD);
 
-	if (fuzz_state->current_op == MICROOP && fuzz_state->file_open) {
-		ibs_log_event(rip_value, uop_cnt, opData3, opData1, phys_addr, lin_addr,
-		fuzz_state->saved_regs.rax, fuzz_state->saved_regs.rbx, fuzz_state->saved_regs.rcx, fuzz_state->saved_regs.rdx, fuzz_state->saved_regs.rsi, fuzz_state->saved_regs.rdi,
-		fuzz_state->saved_regs.r8, fuzz_state->saved_regs.r9, fuzz_state->saved_regs.r10, fuzz_state->saved_regs.r11, fuzz_state->saved_regs.r12, fuzz_state->saved_regs.r13, fuzz_state->saved_regs.r14, fuzz_state->saved_regs.r15,
-		fuzz_state->saved_regs.rflags, fuzz_state->saved_regs.rsp, fuzz_state->saved_regs.rbp, branch_target_rip, fuzz_state->inj.i.bytes, fuzz_state->inj.i.len);
+    //u64 branch_target_rip = __read_msr(BP_IBSTGT_RIP);
 
-		fuzz_state->file_open = false;
-	}
+    //if ((phys_addr & 0xfd00000000) == 0xfd00000000) {
+    if (ibs_op_ctl_data.IbsOpValid) {
+        if (opData3.ld_op == 1 || opData3.st_op == 1) {
+            pr_info("[RIP: 0x%016llx][uop cnt: %lld] [%6s%s] 0x%016llx (v=0x%016llx) UC[%s] WC[%s] CacheMiss [%s] tagToRetire [%4d] compToRetire [%4d] \n",rip_value ,uop_cnt, opData3.ld_op ? "load" : "store", memwithStrings[opData3.op_mem_width], phys_addr, lin_addr,  opData3.dc_wc_mem_acc ? "+" : "-", opData3.dc_uc_mem_acc ? "+" : "-", opData3.dc_miss ? "+" : "-",opData1.comp_to_ret_ctr, opData1.tag_to_ret_ctr);
+		} else {
+            //pr_info("[RIP: 0x%016llx][uop cnt: %lld] [%8s] Branch[%3s] tagToRetire [%4d] compToRetire [%4d] micro [%3s] multiOP [%3s]\n",rip_value, uop_cnt, "ALU", opData1.op_brn_ret ? "yes" : "no" , opData1.comp_to_ret_ctr, opData1.tag_to_ret_ctr, opData1.op_microcode ? "yes" : "no", opData1.op_brn_fuse ? "yes" : "no" );
+        }
+    }
 
-	ibs_op_ctl_data.val = 0;
-	__write_msr(IBS_OP_CTL, ibs_op_ctl_data.val);
-	__write_msr(IBS_OP_DATA, 0);
-	__write_msr(IBS_OP_DATA2, 0);
-	__write_msr(IBS_OP_DATA3, 0);
-	__write_msr(IBS_DC_LIN_AD, 0);
-	__write_msr(IBS_DC_PHYS_AD, 0);
-	__write_msr(IBS_OP_RIP, 0);
-	__write_msr(BP_IBSTGT_RIP, 0);
+    ibs_op_ctl_data.value = 0;
+    __write_msr(IBS_OP_CTL, ibs_op_ctl_data.value);
+    __write_msr(IBS_OP_DATA, 0);
+    __write_msr(IBS_OP_DATA2, 0);
+    __write_msr(IBS_OP_DATA3, 0);
+    __write_msr(IBS_DC_LIN_AD, 0);
+    __write_msr(IBS_DC_PHYS_AD, 0);
+    __write_msr(IBS_OP_RIP, 0);
+    __write_msr(BP_IBSTGT_RIP, 0);
+}
+
+static inline void prefetcht0_strict(const void *addr) {
+    asm volatile("prefetchnta (%0)" :: "r"(addr) : "memory");
 }
 
 // Disable IBS NMIs on the local APIC.
@@ -4916,12 +4945,429 @@ static void ibs_apic_exit(void *info)
 	preempt_enable();
 }
 
-static noinstr void svm_vcpu_enter_exit(struct kvm_vcpu *vcpu,
-					bool spec_ctrl_intercepted)
+#define SVM_IBS_VMRUN 1
+//#define MAX_INSTRUCTION_COUNT 6000
+
+static u64 __maybe_unused offset = 0x0;
+static void* __maybe_unused fake_vmsa = NULL;
+static u64 __maybe_unused ibs_uop_counter = 0;
+static u64 __maybe_unused repetition_counter = 0;
+#include <linux/cpu.h>
+extern u64 __svm_sev_es_vcpu_run_recover_vmrun;
+
+#include <asm/desc.h>
+#include <asm/processor.h>
+
+#define PAGE_PRESENT 0x1
+#define PAGE_RW 0x2
+#define PAGE_USER 0x4
+#define PAGE_SIZE_4K 4096
+
+static inline unsigned long __read_cr3_custom(void) {
+    unsigned long cr3;
+    asm volatile("mov %%cr3, %0" : "=r"(cr3));
+    return cr3;
+}
+
+static void __maybe_unused make_writable(unsigned long virt_addr) {
+    unsigned long *pml5, *pml4, *pdp, *pd, *pt;
+    unsigned long index5, index4, index3, index2, index1;
+    
+    // Get the base of PML5
+    pml5 = (unsigned long *)phys_to_virt(__read_cr3_custom() & ~0xFFFull);
+	
+    // Compute indices for the 5-level page table
+    index5 = (virt_addr >> 48) & 0x1FF;
+    index4 = (virt_addr >> 39) & 0x1FF;
+    index3 = (virt_addr >> 30) & 0x1FF;
+    index2 = (virt_addr >> 21) & 0x1FF;
+    index1 = (virt_addr >> 12) & 0x1FF;
+
+    pr_info("pml5 = %lx\n", (unsigned long)pml5);
+    // Walk the 5-level paging hierarchy, allocating new tables if necessary
+    if (!pml5[index5]) {
+        pml5[index5] = virt_to_phys((void *)__get_free_page(GFP_KERNEL)) | PAGE_PRESENT | PAGE_RW;
+    }
+    pr_info("pl5[index5] = %lx\n", pml5[index5]);
+    pml4 = (unsigned long *)(unsigned long)phys_to_virt(pml5[index5] & PAGE_MASK);
+    pr_info("pml4 = %lx\n", (unsigned long)pml4);
+    if (!pml4[index4]) {
+        pml4[index4] = virt_to_phys((void *)__get_free_page(GFP_KERNEL)) | PAGE_PRESENT | PAGE_RW;
+    }
+    pr_info("pl4[index4] = %lx\n", pml4[index4]);
+    pdp = (unsigned long *)((unsigned long)phys_to_virt(pml4[index4]) & PAGE_MASK);
+    pr_info("pdp = %lx\n", (unsigned long)pdp);
+    if (!pdp[index3]) {
+        pdp[index3] = virt_to_phys((void *)__get_free_page(GFP_KERNEL)) | PAGE_PRESENT | PAGE_RW;
+    }
+    pr_info("pdp[index3] = %lx\n", pdp[index3]);
+    pd = (unsigned long *)((unsigned long)phys_to_virt(pdp[index3]) & PAGE_MASK);
+    pr_info("pd = %lx\n", (unsigned long)pd);
+    if (!pd[index2]) {
+        pd[index2] = virt_to_phys((void *)__get_free_page(GFP_KERNEL)) | PAGE_PRESENT | PAGE_RW;
+    }
+    pr_info("pd[index2] = %lx\n", pd[index2]);
+    pt = (unsigned long *)((unsigned long)phys_to_virt(pd[index2]) & PAGE_MASK);
+    pr_info("pt = %lx\n", (unsigned long)pt);
+    if (!pt[index1]) {
+		pr_err("pt[index1] is NULL, MAPPING TO PHYS ADDRESS 0x0 \n");
+		pt[index1] = PAGE_PRESENT | PAGE_RW;
+    }else{
+		pr_info("Marking %lx as writable\n", virt_addr);
+		pt[index1] |= PAGE_PRESENT | PAGE_RW;
+	}
+    pr_info("pt[index1] = %lx\n", pt[index1]);
+
+    // Flush TLB
+    asm volatile("invlpg (%0)" ::"r"(virt_addr) : "memory");
+}
+
+#define NX_BIT (0x1ULL << 63)
+static void map_physical_to_virtual_4lvl(unsigned long phys_addr, unsigned long virt_addr)
+{
+    unsigned long *pml4, *pdp, *pd, *pt;
+    unsigned long index4, index3, index2, index1;
+    unsigned long new_page;
+
+    /* CR3 points to PML4 in 4-level paging */
+    pml4 = (unsigned long *)phys_to_virt(__read_cr3_custom() & PAGE_MASK);
+
+    index4 = (virt_addr >> 39) & 0x1FF;
+    index3 = (virt_addr >> 30) & 0x1FF;
+    index2 = (virt_addr >> 21) & 0x1FF;
+    index1 = (virt_addr >> 12) & 0x1FF;
+
+    if (!(pml4[index4] & PAGE_PRESENT)) {
+        new_page = __get_free_page(GFP_KERNEL);
+        if (!new_page)
+            return;
+        memset((void *)new_page, 0, PAGE_SIZE);
+        pml4[index4] = virt_to_phys((void *)new_page) | PAGE_PRESENT | PAGE_RW;
+    }
+
+    pdp = (unsigned long *)phys_to_virt(pml4[index4] & PAGE_MASK);
+
+    if (!(pdp[index3] & PAGE_PRESENT)) {
+        new_page = __get_free_page(GFP_KERNEL);
+        if (!new_page)
+            return;
+        memset((void *)new_page, 0, PAGE_SIZE);
+        pdp[index3] = virt_to_phys((void *)new_page) | PAGE_PRESENT | PAGE_RW;
+    }
+
+    pd = (unsigned long *)phys_to_virt(pdp[index3] & PAGE_MASK);
+
+    if (!(pd[index2] & PAGE_PRESENT)) {
+        new_page = __get_free_page(GFP_KERNEL);
+        if (!new_page)
+            return;
+        memset((void *)new_page, 0, PAGE_SIZE);
+        pd[index2] = virt_to_phys((void *)new_page) | PAGE_PRESENT | PAGE_RW;
+    }
+
+    pt = (unsigned long *)phys_to_virt(pd[index2] & PAGE_MASK);
+
+    pt[index1] = (phys_addr & PAGE_MASK) | PAGE_PRESENT | PAGE_RW | NX_BIT;
+
+    asm volatile("invlpg (%0)" : : "r"(virt_addr) : "memory");
+    //invlpgb_flush(virt_addr);
+}
+
+
+struct idt_gate {
+    unsigned offset_low:16;        /* Bits 15:0 - Offset bits 15:0 */
+    unsigned segment_selector:16;   /* Bits 31:16 - Segment Selector */
+    unsigned ist:3;                /* Bits 34:32 - Interrupt Stack Table offset */
+    unsigned reserved1:5;          /* Bits 39:35 - Reserved */
+    unsigned gate_type:5;          /* Bits 44:40 - Gate Type (e.g., 0xE for interrupt gate, 0xF for trap gate) */
+    unsigned dpl:2;                /* Bits 46:45 - Descriptor Privilege Level */
+    unsigned present:1;            /* Bit 47 - Present bit */
+    unsigned offset_middle:16;     /* Bits 63:48 - Offset bits 31:16 */
+    unsigned offset_high:32;       /* Bits 95:64 - Offset bits 63:32 */
+    unsigned reserved2:32;         /* Bits 127:96 - Reserved */
+} __attribute__((packed));
+
+static int __maybe_unused __dump_tss_stuff(void)
+{
+    int i;
+	int cpu = smp_processor_id();
+	struct desc_ptr gdt_desc;
+	unsigned long gdt_addr;
+    struct x86_hw_tss *tss = &get_cpu_entry_area(cpu)->tss.x86_tss;
+	struct cpu_entry_area *cea = get_cpu_entry_area(cpu);
+	
+    pr_info("CPU %d TSS Dump:\n", cpu);
+    native_store_gdt(&gdt_desc);
+    gdt_addr = gdt_desc.address;
+	gdt_desc.size = 0x1020-1;
+	native_load_gdt(&gdt_desc);
+
+
+	struct idt_gate *idt = (struct idt_gate *)(0xfffffe0000000000);
+	make_writable(0xfffffe0000000000);
+	
+	make_writable((unsigned long)cea);
+	
+	/* 
+	* if we just do this without copying before, 
+	* any GP fault will also cause a page fault
+	*/
+	//make_writable(0x1000 + (unsigned long)cea);
+	//memcpy(&cea->gdt[0x1010],&cea->gdt[0x10],0x8);
+	//idt[13].segment_selector = 0x1010;
+
+	
+
+	pr_info("IDT Gate 13 (GP fault):\n");
+	pr_info("  Offset Low: 0x%x\n", idt[13].offset_low);
+	pr_info("  Segment Selector: 0x%x\n", idt[13].segment_selector);
+	pr_info("  IST: %d\n", idt[13].ist);
+	pr_info("  Gate Type: 0x%x\n", idt[13].gate_type);
+	pr_info("  DPL: %d\n", idt[13].dpl);
+	pr_info("  Present: %d\n", idt[13].present);
+	pr_info("  Offset Middle: 0x%x\n", idt[13].offset_middle);
+	pr_info("  Offset High: 0x%x\n", idt[13].offset_high);
+	pr_info("  Reserved: 0x%x\n", idt[13].reserved1);
+
+
+    pr_info("GDT address: 0x%lx, size: 0x%x\n", gdt_addr, gdt_desc.size);
+	pr_info("  Entry Area: %px\n", (void *)cea);
+	pr_info("  TSS Area: %px\n", (void *)tss);
+    pr_info("  RSP0 = %px\n", (void *)tss->sp0);
+    pr_info("  RSP1 = %px\n", (void *)tss->sp1);
+    pr_info("  RSP2 = %px\n", (void *)tss->sp2);
+
+	pr_info("  &IST = 0x%llx\n", (u64)tss->ist);
+    for (i = 0; i < 7; i++)
+        pr_info("  IST[%d] = %px\n", i, (void *)tss->ist[i]);
+
+    return 0;
+}
+
+static __always_inline uint64_t measure_access_time(const uint8_t *addr)
+{
+    uint32_t lo_start, hi_start;
+    uint32_t lo_end, hi_end;
+    uint32_t aux;
+    volatile uint8_t value;
+    preempt_disable();
+    /*
+     * Serialize earlier memory ops before timing.
+     * mfence is conservative; lfence is the key one for load timing.
+     */
+    asm volatile("mfence\n\t"
+                 "lfence\n\t" ::: "memory");
+
+    /* Read starting timestamp */
+    asm volatile("rdtscp\n\t"
+                 : "=a"(lo_start), "=d"(hi_start), "=c"(aux)
+                 :
+                 : "memory");
+
+    /* Prevent later ops from executing early */
+    asm volatile("lfence\n\t" ::: "memory");
+
+    /* Timed load */
+    asm volatile("movb (%1), %0\n\t"
+                 : "=r"(value)
+                 : "r"(addr)
+                 : "memory");
+
+    /* Ensure load completes before reading end timestamp */
+    asm volatile("lfence\n\t" ::: "memory");
+
+    /* Read ending timestamp */
+    asm volatile("rdtscp\n\t"
+                 : "=a"(lo_end), "=d"(hi_end), "=c"(aux)
+                 :
+                 : "memory");
+
+    asm volatile("mfence\n\t" ::: "memory");
+    preempt_enable();
+    return (((uint64_t)hi_end << 32) | lo_end) -
+           (((uint64_t)hi_start << 32) | lo_start);
+}
+
+static __always_inline uint64_t measure_timing_overhead(void)
+{
+    uint32_t lo_start, hi_start;
+    uint32_t lo_end, hi_end;
+    uint32_t aux;
+
+    preempt_disable();
+
+    /* Serialize before starting */
+    asm volatile("lfence\n\t" ::: "memory");
+
+    /* Start timestamp */
+    asm volatile("rdtscp\n\t"
+                 : "=a"(lo_start), "=d"(hi_start), "=c"(aux)
+                 :
+                 : "memory");
+
+    /* Prevent reordering */
+    asm volatile("lfence\n\t" ::: "memory");
+
+    /*
+     * No memory access here — this is the key difference.
+     * Keep the structure identical to the real measurement.
+     */
+
+    asm volatile("lfence\n\t" ::: "memory");
+
+    /* End timestamp */
+    asm volatile("rdtscp\n\t"
+                 : "=a"(lo_end), "=d"(hi_end), "=c"(aux)
+                 :
+                 : "memory");
+
+    asm volatile("lfence\n\t" ::: "memory");
+
+    preempt_enable();
+
+    return (((uint64_t)hi_end << 32) | lo_end) -
+           (((uint64_t)hi_start << 32) | lo_start);
+}
+
+static __always_inline void flush_cache_line_fenced(const void *addr)
+{
+    asm volatile("mfence\n\t" ::: "memory");
+    asm volatile("clflush (%0)\n\t" : : "r"(addr) : "memory");
+	asm volatile("invlpg (%0)" : : "r"(addr) : "memory");
+    asm volatile("mfence\n\t" ::: "memory");
+}
+
+
+static inline u64 set_asid_bits(u64 val, u8 asid)
+{
+    /* Clear bits 46–53 */
+    val &= ~(0xFFULL << 46);
+
+    /* Set new ASID (only lower 8 bits used) */
+    val |= ((u64)(asid & 0xFF) << 46);
+
+    val |= (1ULL << 51);
+
+    return val;
+}
+
+static inline u64 set_c_bit(u64 val)
+{
+    return val | (1ULL << 51);
+}
+
+#include "vmsa_cachepc_probe.h"
+static struct vmsa_pp_state pp;
+static int nr_evicted = 0;
+#define FUZZER_VMSA_GPA  0x800000ULL
+
+static int __maybe_unused sev_snp_force_map_vmsa_gpa(struct kvm_vcpu *vcpu, u64 vmsa_gpa)
+{
+    struct vcpu_svm *svm = to_svm(vcpu);
+    struct kvm_memory_slot *slot;
+    struct page *vmsa_page = NULL;
+    gfn_t gfn;
+    kvm_pfn_t pfn;
+    int max_order;
+    int ret = 0;
+
+    if (!sev_snp_guest(vcpu->kvm))
+        return -EINVAL;
+
+    if (!PAGE_ALIGNED(vmsa_gpa))
+        return -EINVAL;
+
+    svm->vmcb->control.vmsa_pa = INVALID_PAGE;
+    svm->sev_es.snp_vmsa_gpa = vmsa_gpa;
+
+    gfn = gpa_to_gfn(vmsa_gpa);
+    slot = gfn_to_memslot(vcpu->kvm, gfn);
+    if (!slot) {
+        ret = -EINVAL;
+        goto out;
+    }
+
+    ret = kvm_gmem_get_pfn(vcpu->kvm, slot, gfn, &pfn, &vmsa_page, &max_order);
+    if (ret)
+        goto out;
+
+    if (!vmsa_page) {
+        ret = -EFAULT;
+        goto out;
+    }
+
+    svm->sev_es.vmsa = (struct sev_es_save_area *)page_address(vmsa_page);
+    if (!svm->sev_es.vmsa) {
+        ret = -EFAULT;
+        goto out;
+    }
+
+    svm->vmcb->control.vmsa_pa = pfn_to_hpa(pfn);
+    vmcb_mark_all_dirty(svm->vmcb);
+
+    vcpu->arch.mp_state = KVM_MP_STATE_RUNNABLE;
+    vcpu->arch.pv.pv_unhalted = false;
+
+out:
+    return ret;
+}
+
+static int __maybe_unused sev_snp_map_current_vmsa_to_gpa(struct kvm_vcpu *vcpu, u64 target_gpa)
+{
+    struct vcpu_svm *svm = to_svm(vcpu);
+    struct kvm_memory_slot *slot;
+    struct page *vmsa_page;
+    kvm_pfn_t existing_pfn;
+    kvm_pfn_t slot_pfn;
+    int max_order;
+    gfn_t gfn;
+    int ret = 0;
+
+    if (!sev_snp_guest(vcpu->kvm))
+        return -EINVAL;
+
+    if (!PAGE_ALIGNED(target_gpa))
+        return -EINVAL;
+
+    /* Make sure a VMSA is actually installed */
+    if (svm->vmcb->control.vmsa_pa == INVALID_PAGE)
+        return -EINVAL;
+
+    existing_pfn = PHYS_PFN(svm->vmcb->control.vmsa_pa);
+
+    gfn = gpa_to_gfn(target_gpa);
+    slot = gfn_to_memslot(vcpu->kvm, gfn);
+    if (!slot)
+        return -EINVAL;
+
+    /*
+     * Resolve the GPA slot to a PFN and verify it matches the
+     * currently installed VMSA page.  This confirms the caller
+     * has set up the guest_memfd backing for target_gpa to point
+     * at the same physical page as the real VMSA.
+     */
+    ret = kvm_gmem_get_pfn(vcpu->kvm, slot, gfn, &slot_pfn, &vmsa_page, &max_order);
+    if (ret)
+        return ret;
+
+    if (slot_pfn != existing_pfn) {
+        pr_err("[Fuzzer] target GPA pfn 0x%llx != VMSA pfn 0x%llx\n",
+               (unsigned long long)slot_pfn,
+               (unsigned long long)existing_pfn);
+        return -EINVAL;
+    }
+
+    /* Already mapped to the same page — just record the GPA alias */
+    svm->sev_es.snp_vmsa_gpa = target_gpa;
+
+    return 0;
+}
+
+static noinstr void svm_vcpu_enter_exit(struct kvm_vcpu *vcpu, bool spec_ctrl_intercepted)
 {
 	struct svm_cpu_data *sd = per_cpu_ptr(&svm_data, vcpu->cpu);
 	struct vcpu_svm *svm = to_svm(vcpu);
-
+	(void)sd;
 	ibs_apic_exit(NULL);
 	guest_state_enter_irqoff();
 
@@ -4939,28 +5385,130 @@ static noinstr void svm_vcpu_enter_exit(struct kvm_vcpu *vcpu,
 
 	amd_clear_divider();
 
-	int cpu = smp_processor_id();
-	cpu_state_t* fuzz_state = &global_fuzz_state.cpu_state[cpu];
+	
+	
+#if SVM_IBS_VMRUN
+	pr_warn_once("VMCB PA 0x%lx",svm->current_vmcb->pa);
+	pr_warn_once("VMSA PA 0x%llx",svm->vmcb->control.vmsa_pa);
+	pr_warn_once("GHCB PA 0x%llx",svm->vmcb->control.ghcb_gpa);
+	pr_warn_once("iopm_base_pa 0x%llx",svm->vmcb->control.iopm_base_pa);
+	pr_warn_once("msrpm_base_pa 0x%llx",svm->vmcb->control.msrpm_base_pa);
+	u64 vm_state = __read_msr(0xC0010117);
+	u64 apic_base = __read_msr(0x1B);
 
-	if (sev_es_guest(vcpu->kvm)) {
-			__svm_sev_es_vcpu_run(svm, spec_ctrl_intercepted,
-			sev_es_host_save_area(sd));
-	} else {
-		if (fuzz_state->current_op == MICROOP) {
-			write_ibs_ctrl(fuzz_state->fetch_counter);
+
+	if(ibs_uop_counter  == 0){
+		pr_info("[Fuzzer] vcpu va: %llx, vcpu pa: %llx\n", (u64)vcpu, (u64)virt_to_phys(vcpu));
+		pr_info("[Fuzzer] vm va: %llx, vm pa: %llx\n", (u64)vcpu->kvm, (u64)virt_to_phys(vcpu->kvm));
+		pr_info("[Fuzzer] arch va: %llx, arch pa: %llx\n", (u64)&vcpu->arch, (u64)virt_to_phys(&vcpu->arch));
+		pr_info("[Fuzzer] vmsa va: %llx, run pa: %llx\n", (u64)to_svm(vcpu)->sev_es.vmsa, (u64)virt_to_phys(to_svm(vcpu)->sev_es.vmsa));
+		pr_info("[Fuzzer] vmcb va: %llx, vmcb pa: %llx\n", (u64)to_svm(vcpu)->current_vmcb, (u64)virt_to_phys(to_svm(vcpu)->current_vmcb));
+		pr_info("[Fuzzer] svm state va: %llx, svm state pa: %llx\n", (u64)to_svm(vcpu), (u64)virt_to_phys(to_svm(vcpu)));
+		pr_info("[Fuzzer] iopm_base_pa: %llx\n", svm->vmcb->control.iopm_base_pa);
+		pr_info("[Fuzzer] msrpm_base_pa: %llx\n", svm->vmcb->control.msrpm_base_pa);
+		pr_info("[Fuzzer] avic_backing_page: %llx\n", svm->vmcb->control.avic_backing_page);
+		pr_info("[Fuzzer] avic_logical_id: %llx\n", svm->vmcb->control.avic_logical_id);
+		pr_info("[Fuzzer] avic_physical_id: %llx\n", svm->vmcb->control.avic_physical_id);
+		
+		//map_physical_to_virtual_4lvl(vm_state, 0xffff90b98147c000);
+		pr_info("[Fuzzer] vm state: %llx\n", vm_state);
+		pr_info("[Fuzzer] apic_base: %llx\n", apic_base);
+
+		//map_physical_to_virtual_4lvl(set_asid_bits((u64)virt_to_phys(to_svm(vcpu)->sev_es.vmsa), 0x3F), (u64)to_svm(vcpu)->sev_es.vmsa);
+		pr_info("[Fuzzer] gpa vmsa: %llx\n", (u64)to_svm(vcpu)->sev_es.snp_vmsa_gpa);
+		vmsa_pp_init(&pp);
+		nr_evicted = 0;
+		//svm->vmcb->control.iopm_base_pa = set_asid_bits(svm->vmcb->control.iopm_base_pa, 0x1);
+		pr_info("[Fuzzer] current_vmcb->pa: 0x%llx\n", set_asid_bits(svm->current_vmcb->pa, 0x1));
+		map_physical_to_virtual_4lvl(svm->vmcb->control.iopm_base_pa, 0xffff90b99147c000);
+	}
+#endif
+
+	if (true){
+#if SVM_IBS_VMRUN
+		
+		u64 instruction_value = ibs_uop_counter;
+		if(ibs_uop_counter <= MAX_INSTRUCTION_COUNT) {
+			write_ibs_ctrl(instruction_value);
+			READ_ONCE(((u8*)svm)[1]);
+			READ_ONCE(((u8*)svm)[2]);
+			READ_ONCE(((u8*)svm)[3]);
+			READ_ONCE(((u8*)svm)[4]);
+			READ_ONCE(((u8*)svm)[5]);
+			READ_ONCE(((u8*)svm)[6]);
 		}
+#endif
+		
+		// prefetcht0_strict((uint8_t *)to_svm(vcpu)->sev_es.vmsa + (offset & 0xFFFFFFFF));
+		// prefetcht0_strict((uint8_t *)to_svm(vcpu)->sev_es.vmsa + (offset & 0xFFFFFFFF));
+		// prefetcht0_strict((uint8_t *)to_svm(vcpu)->sev_es.vmsa + (offset & 0xFFFFFFFF));
+		// prefetcht0_strict((uint8_t *)to_svm(vcpu)->sev_es.vmsa + (offset & 0xFFFFFFFF));
 
+		// u64 time_befor = measure_access_time((uint8_t *)to_svm(vcpu)->sev_es.vmsa + (offset & 0xFFFFFFFF));
+
+		//flush_cache_line_fenced((uint8_t *)to_svm(vcpu)->current_vmcb);
+		// *(volatile uint8_t *)0xffff90b98147c5d8;
+		// *(volatile uint8_t *)0xffff90b98147c5d8;
+		// *(volatile uint8_t *)0xffff90b98147c5d8;
+		// *(volatile uint8_t *)0xffff90b98147c5d8;
+		// u64 time_after_flush = measure_access_time((uint8_t *)to_svm(vcpu)->sev_es.vmsa + (offset & 0xFFFFFFFF));
+
+		// if (ibs_uop_counter >= 3500)
+		// {
+		// 	svm->vmcb->control.iopm_base_pa = set_asid_bits(svm->vmcb->control.iopm_base_pa, 0x1);
+		// }
+		//flush_cache_line_fenced((uint8_t *)0xffff90b99147c000 + 0x02a);
+		//svm->vmcb->control.vmsa_pa += offset;
+		//vmsa_pp_prime(&pp);
+		//__svm_sev_es_vcpu_run(svm, spec_ctrl_intercepted, sev_es_host_save_area(sd));
 		__svm_vcpu_run(svm, spec_ctrl_intercepted);
+		// bool vmsa_hit = vmsa_pp_probe_and_check(
+		// 		&pp, virt_to_phys(to_svm(vcpu)->sev_es.vmsa) + 0x3b0);
+		//u64 time = measure_access_time((uint8_t *)0xffff90b99147c000 + 0x02a);
+#if SVM_IBS_VMRUN
+		if(ibs_uop_counter <= MAX_INSTRUCTION_COUNT) {
+			READ_ONCE(((u8*)svm)[1]);
+			READ_ONCE(((u8*)svm)[2]);
+			READ_ONCE(((u8*)svm)[3]);
+			READ_ONCE(((u8*)svm)[4]);
+			READ_ONCE(((u8*)svm)[5]);
+			READ_ONCE(((u8*)svm)[6]);
+			// pr_info("CPU %d\n", smp_processor_id());
+			// pr_info("[Fuzzer] vmsa access time before VMRUN: %lld cycles\n", time_befor);
+			// pr_info("[Fuzzer] vmsa access time after flush: %lld cycles\n", time_after_flush);
+			//pr_info("[Fuzzer] vmsa access time after VMRUN: %lld cycles\n", time);
+			// pr_info("[Fuzzer] callibration test: %lld cycles\n", measure_access_time((uint8_t *)to_svm(vcpu)->sev_es.vmsa + (offset & 0xFFFFFFFF)));
 
-		if (fuzz_state->current_op == MICROOP && fuzz_state->fetch_counter <= MAX_INSTRUCTION_COUNT) {
-			read_ibs_ctrl(fuzz_state->fetch_counter, vcpu);
+			
+			// if (vmsa_hit)
+			// {
+			// 	pr_info("[Fuzzer] VMSA hit at offset 0x%llx for instruction %lld\n", offset, ibs_uop_counter);
+			// 	nr_evicted++;
+			// }else{
+			// 	pr_info("[Fuzzer] VMSA miss at offset 0x%llx for instruction %lld\n", offset, ibs_uop_counter);
+			// }
+				
+			read_ibs_ctrl(instruction_value);
+			//pr_info("[Fuzzer] Total VMRUNs: %lld, VMSA hits: %d\n", ibs_uop_counter, nr_evicted);
 		}
+
+		repetition_counter++;
+		if (repetition_counter == 0x1){
+			ibs_uop_counter++;
+			repetition_counter = 0;
+
+		}
+#endif
+	}
+	else{
+		__svm_vcpu_run(svm, spec_ctrl_intercepted);
 	}
 
 	raw_local_irq_disable();
 
 	guest_state_exit_irqoff();
 }
+
 
 static __no_kcsan fastpath_t svm_vcpu_run(struct kvm_vcpu *vcpu, u64 run_flags)
 {
@@ -6305,6 +6853,16 @@ static long fuzz_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		uint64_t ack_value;
 		if (copy_from_user(&ack_value, (void __user *)arg, sizeof(ack_value)))
 			return -EFAULT;
+
+		offset = ack_value;
+		ibs_uop_counter = 0;
+
+		if(fake_vmsa)
+		{
+			kfree(fake_vmsa);
+		}
+
+		return 0;
 		set_ack_event(ack_value);
 		return 0;
     default:

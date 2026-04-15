@@ -61,7 +61,7 @@ void map_physical_to_virtual(unsigned long phys_addr, unsigned long virt_addr) {
     //pr_info("pt[index1] = %lx\n", pt[index1]);
 
     // Flush TLB
-    asm volatile("invlpg (%0)" ::"r"(virt_addr) : "memory");
+    invlpgb_flush(virt_addr);
 }
 
 unsigned long * get_pte_address(unsigned long virt_addr) {
@@ -188,6 +188,8 @@ static __always_inline void flush_cache_line_fenced(const void *addr)
     asm volatile("mfence\n\t" ::: "memory");
 }
 
+
+
 void map_physical_to_virtual_4lvl(unsigned long phys_addr, unsigned long virt_addr)
 {
     unsigned long *pml4, *pdp, *pd, *pt;
@@ -208,7 +210,6 @@ void map_physical_to_virtual_4lvl(unsigned long phys_addr, unsigned long virt_ad
             return;
         memset((void *)new_page, 0, PAGE_SIZE);
         pml4[index4] = virt_to_phys((void *)new_page) | PAGE_PRESENT | PAGE_RW;
-        flush_cache_line_fenced(&pml4[index4]);
     }
 
     pdp = (unsigned long *)phys_to_virt(pml4[index4] & PAGE_MASK);
@@ -219,7 +220,6 @@ void map_physical_to_virtual_4lvl(unsigned long phys_addr, unsigned long virt_ad
             return;
         memset((void *)new_page, 0, PAGE_SIZE);
         pdp[index3] = virt_to_phys((void *)new_page) | PAGE_PRESENT | PAGE_RW;
-        flush_cache_line_fenced(&pdp[index3]);
     }
 
     pd = (unsigned long *)phys_to_virt(pdp[index3] & PAGE_MASK);
@@ -230,15 +230,14 @@ void map_physical_to_virtual_4lvl(unsigned long phys_addr, unsigned long virt_ad
             return;
         memset((void *)new_page, 0, PAGE_SIZE);
         pd[index2] = virt_to_phys((void *)new_page) | PAGE_PRESENT | PAGE_RW;
-        flush_cache_line_fenced(&pd[index2]);
     }
 
     pt = (unsigned long *)phys_to_virt(pd[index2] & PAGE_MASK);
 
     pt[index1] = (phys_addr & PAGE_MASK) | PAGE_PRESENT | PAGE_RW | NX_BIT;
-    flush_cache_line_fenced(&pt[index1]);
 
-    invlpgb_flush(virt_addr);
+    asm volatile("invlpg (%0)" : : "r"(virt_addr) : "memory");
+    //invlpgb_flush(virt_addr);
 }
 
 

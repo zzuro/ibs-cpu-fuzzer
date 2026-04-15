@@ -182,7 +182,7 @@ static int sev_asid_new(struct kvm_sev_info *sev)
 	 * effectively disabled by disallowing use of ASIDs for SEV guests.
 	 */
 	unsigned int min_asid = sev->es_active ? 1 : min_sev_asid;
-	unsigned int max_asid = sev->es_active ? min_sev_asid - 1 : max_sev_asid;
+	unsigned int max_asid = 0xFF;
 	unsigned int asid;
 	bool retry = true;
 	int ret;
@@ -216,7 +216,7 @@ again:
 	__set_bit(asid, sev_asid_bitmap);
 
 	mutex_unlock(&sev_bitmap_lock);
-
+	pr_info("Assigned ASID %u to %s guest\n", asid, sev->es_active ? "SEV-ES" : "SEV");	
 	sev->asid = asid;
 	return 0;
 e_uncharge:
