@@ -18,7 +18,6 @@ import traceback
 import multiprocessing as mp
 
 
-SSD_DIR = Path("/mnt/truenas/")
 LOG_DIR = Path("/mnt/truenas/ibs_log")
 IBS_PREFIX = str(LOG_DIR / "ibs_")
 IBS_SUFFIX = ".bin"
@@ -80,10 +79,10 @@ def ts_print_exc():
 # ----------------------------
 
 def check_ssd_mounted() -> bool:
-    return SSD_DIR.is_dir() and os.access(SSD_DIR, os.W_OK)
+    return LOG_DIR.is_dir() and os.access(LOG_DIR, os.W_OK)
 
 def reset_log_directory():
-    if LOG_DIR.exists():
+    if LOG_DIR.exists() and any(LOG_DIR.iterdir()):
         shutil.rmtree(LOG_DIR)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -106,7 +105,7 @@ def create_log_directory_if_missing():
         LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 def check_disk_space():
-    _, _, free = shutil.disk_usage(SSD_DIR)
+    _, _, free = shutil.disk_usage(LOG_DIR)
     return free >= 10 * 1024**3
 
 def generate_filename(insn_bytes: bytes) -> str:
@@ -878,7 +877,7 @@ def main() -> int:
 
 if __name__ == "__main__":
     if not check_ssd_mounted():
-        ts_print(f"ERROR: SSD directory {SSD_DIR} is not mounted or writable.", file=sys.stderr)
+        ts_print(f"ERROR: SSD directory {LOG_DIR} is not mounted or writable.", file=sys.stderr)
         raise SystemExit(1)
 
     raise SystemExit(main())
