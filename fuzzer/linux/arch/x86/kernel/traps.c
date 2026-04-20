@@ -789,11 +789,23 @@ static void gp_user_force_sig_segv(struct pt_regs *regs, int trapnr,
 	force_sig(SIGSEGV);
 }
 
+
+u64 function_address = 0;
+EXPORT_SYMBOL(function_address);
+u64 recover_address = 0;
+EXPORT_SYMBOL(recover_address);
+
 DEFINE_IDTENTRY_ERRORCODE(exc_general_protection)
 {
 	char desc[sizeof(GPFSTR) + 50 + 2*sizeof(unsigned long) + 1] = GPFSTR;
 	enum kernel_gp_hint hint = GP_NO_HINT;
 	unsigned long gp_addr;
+	//pr_info("GP fault ------------------\n");
+	if(regs->ip > function_address && regs->ip < recover_address){
+		pr_info(" - recovering from GP Fault at 0x%016lx failure at address 0x%llx\n",regs->ip, (u64)recover_address);
+		regs->ip = recover_address;
+		return;
+	}
 
 	if (user_mode(regs) && try_fixup_enqcmd_gp())
 		return;
@@ -844,11 +856,15 @@ DEFINE_IDTENTRY_ERRORCODE(exc_general_protection)
 	if (hint != GP_NON_CANONICAL)
 		gp_addr = 0;
 
+	pr_info("GP fault at 0x%lx",gp_addr);
+	pr_info("GP IP at 0x%lx\n", regs->ip);
+
 	die_addr(desc, regs, error_code, gp_addr);
 
 exit:
 	cond_local_irq_disable(regs);
 }
+
 
 static bool do_int3(struct pt_regs *regs)
 {

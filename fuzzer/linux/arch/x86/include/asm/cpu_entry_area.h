@@ -88,7 +88,7 @@ struct doublefault_stack {
  * There is no direct allocation of a struct cpu_entry_area.
  */
 struct cpu_entry_area {
-	char gdt[PAGE_SIZE];
+	char gdt[2 * PAGE_SIZE];
 
 	/*
 	 * The GDT is just below entry_stack and thus serves (on x86_64) as

@@ -1127,6 +1127,9 @@ bool fault_in_kernel_space(unsigned long address)
 	return address >= TASK_SIZE_MAX;
 }
 
+
+#include <linux/cpu.h>
+
 /*
  * Called for all faults where 'address' is part of the kernel address
  * space.  Might get called for faults that originate from *code* that
@@ -1193,8 +1196,26 @@ do_kern_addr_fault(struct pt_regs *regs, unsigned long hw_error_code,
 	 * Don't take the mm semaphore here. If we fixup a prefetch
 	 * fault we could otherwise deadlock:
 	 */
+
+	if(hw_error_code & X86_PF_RSVD || hw_error_code & X86_PF_PROT) {
+		if(regs->ip >= function_address && regs->ip <= (function_address + 0x1000) ){
+			pr_info("Page fault custom at address 0x%lx\n",address);
+			pr_info(" - recovering from GP Fault at 0x%016lx failure at address 0x%llx\n",regs->ip, (u64)recover_address);
+			regs->ip = recover_address;
+			return;
+		}
+	}
+	
+	if (address == 0xfffffe00000000d0ull) {
+		pr_info("Custom page fault at address 0x%lx\n", address);
+		pr_info(" - recovering from Page Fault at 0x%016lx failure and setting new IP to 0x%llx\n",regs->ip, (u64)recover_address);
+		regs->ip = recover_address;
+		return;
+	}
+
 	bad_area_nosemaphore(regs, hw_error_code, address);
 }
+
 NOKPROBE_SYMBOL(do_kern_addr_fault);
 
 /*

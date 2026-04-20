@@ -137,6 +137,13 @@ static u64 __maybe_unused rmpupdate_firmware(u64 paddr) {
     return ret;
 }
 
+static __always_inline uint64_t read_rdtscp(void)
+{
+    uint32_t lo, hi;
+    asm volatile("rdtscp" : "=a"(lo), "=d"(hi) :: "rcx");
+    return ((uint64_t)hi << 32) | lo;
+}
+
 static __always_inline uint64_t measure_access_time(const uint8_t *addr)
 {
     uint32_t lo_start, hi_start;
@@ -408,10 +415,6 @@ static inline uint64_t rep_lodsq(const void *src, size_t count)
     return value;
 }
 
-#include "cachepc_probe.h"
-static struct vmsa_pp_state pp;
-static int was_hit = 0;
-static int offset = 0;
 
 static void ibs_analysis_opcode(enum opcode_id id, u64 location,
                                 u64 arg0, u64 arg1, u8 *ptr)
@@ -523,7 +526,78 @@ static inline unsigned long read_cr3(void) {
     return cr3;
 }
 
+#define MY_PMC_IDX          0
+#define MY_PERFEVTSEL_MSR   (0xc0010200ULL + MY_PMC_IDX * 2)
+#define MY_PERFCTR_MSR      (0xc0010201ULL + MY_PMC_IDX * 2)
 
+#define MY_PERFEVTSEL_VAL \
+    ((0x60ULL)        | \
+     (0x80ULL << 8)   | \
+     (1ULL    << 17)  | \
+     (1ULL    << 22)  | \
+     (2ULL    << 40))
+
+static void setup_l1miss_pmc(void)
+{
+    wrmsrl(MY_PERFEVTSEL_MSR, MY_PERFEVTSEL_VAL);
+    wrmsrl(MY_PERFCTR_MSR, 0ULL);
+}
+
+#define PMC_BARRIER() \
+    asm volatile(                        \
+        "mfence\n\t"                     \
+        "mov $0x80000005, %%eax\n\t"     \
+        "cpuid\n\t"                      \
+        : : : "eax","ebx","ecx","edx","memory")
+
+static __always_inline u64 read_pmc(void)
+{
+    u32 lo, hi;
+    asm volatile("rdmsr"
+                 : "=a"(lo), "=d"(hi)
+                 : "c"((u32)MY_PERFCTR_MSR)
+                 : "memory");
+    return ((u64)hi << 32) | lo;
+}
+
+static __always_inline bool is_l1_miss(const u8 *addr)
+{
+    u64 before, after;
+    volatile u8 val;
+
+    preempt_disable();
+
+    PMC_BARRIER();
+    before = read_pmc();
+
+    asm volatile("movb (%1), %0" : "=r"(val) : "r"(addr) : "memory");
+
+    after = read_pmc();
+    PMC_BARRIER();
+
+    preempt_enable();
+
+    return (after - before) > 0;
+}
+
+#define GET_BIT(va, bit) (((uint64_t)(va) >> (bit)) & 1ULL)
+
+uint64_t calculate_zen_utag(void *ptr) {
+  uint64_t va = (uint64_t)ptr;
+  uint64_t u0 = GET_BIT(va, 12) ^ GET_BIT(va, 13) ^ GET_BIT(va, 14) ^ GET_BIT(va, 15) ^ GET_BIT(va, 16) ^ GET_BIT(va, 17) ^ GET_BIT(va, 18) ^ GET_BIT(va, 19) ^ GET_BIT(va, 20) ^ GET_BIT(va, 21) ^ GET_BIT(va, 22) ^ GET_BIT(va, 23) ^ GET_BIT(va, 24) ^ GET_BIT(va, 25) ^ GET_BIT(va, 26) ^ GET_BIT(va, 27);
+  uint64_t u1 = GET_BIT(va, 13) ^ GET_BIT(va, 26);
+  uint64_t u2 = GET_BIT(va, 14) ^ GET_BIT(va, 25);
+  uint64_t u3 = GET_BIT(va, 19) ^ GET_BIT(va, 24);
+  uint64_t u4 = GET_BIT(va, 18) ^ GET_BIT(va, 23);
+  uint64_t u5 = GET_BIT(va, 17) ^ GET_BIT(va, 22);
+  uint64_t u6 = GET_BIT(va, 16) ^ GET_BIT(va, 21);
+  uint64_t u7 = GET_BIT(va, 15) ^ GET_BIT(va, 20);
+  
+  return (u0 << 0) | (u1 << 1) | (u2 << 2) | (u3 << 3) | (u4 << 4) | (u5 << 5) | (u6 << 6) | (u7 << 7);
+}
+
+
+#define ITERATIONS 200
 static void ibs_routine(void *data)
 {
     pr_info("IBS routine called on CPU %d\n", smp_processor_id());
@@ -540,64 +614,98 @@ static void ibs_routine(void *data)
         return;
     }   
 
-    pr_info("PA of allocated memory: %llx\n", get_physical_from_virtual_4lvl(tdata->lin_addr));
-    pr_info("VA of allocated memory:  %llx\n", tdata->lin_addr);
-    pr_info("cr3 value: 0x%llx\n", read_cr3());
+    int offset = 0x610;
+    volatile uint8_t *addr = (uint8_t *)tdata->lin_addr + offset;
 
+    uint64_t mask =
+    (1ULL << 13) | (1ULL << 26) |   // u1
+    (1ULL << 14) | (1ULL << 25);    // u2
+
+    pr_info("alias mask: 0x%llx\n", 0x345600000 ^ mask);
+
+    uint64_t alias = tdata->phys_addr1 ^ mask;
+    pr_info("Physical address: 0x%llx, Tag Physical Address: 0x%llx\n", tdata->phys_addr1, calculate_zen_utag((void*)tdata->phys_addr1));
+    pr_info("Alias address: 0x%llx, Tag Alias Address: 0x%llx\n", alias, calculate_zen_utag((void*)alias));
+
+    volatile uint8_t *addr2 = (uint8_t *)alias;
    
-    // mmio_base = set_asid_bits(mmio_base, 0x0);
-    // __write_msr(0xC0010058, tdata->phys_addr2);
-    // mmio_base = read_msr(0xC0010058);
 
-    ibs_analysis_opcode(OP_VMSAVE, 0, set_c_bit(tdata->phys_addr1), 0x0, ptr);
-    // offset = 0x0;
+    map_physical_to_virtual(tdata->phys_addr1, addr2);
+    addr2 += offset;
 
-    u64 mmio_base = read_msr(0xC0010117);
-    for (int j = 0; j < 200; j++)
+    setup_l1miss_pmc();
+
+    u64 time = 0;
+    u64 l1_hits = 0;
+    u64 l1_misses = 0;
+
+    for (int j = 0; j < ITERATIONS; j++)
     {
-        ibs_analysis_opcode(OP_PREFETCHNTA, j, tdata->lin_addr, 0x0, ptr);
+        flush_cache_line_fenced(addr2);
+        asm volatile("vmsave %0" :: "a"(tdata->phys_addr1) : "memory");
+        bool miss = is_l1_miss(addr2);
+        l1_misses += miss;
+        l1_hits   += !miss;
+
+        flush_cache_line_fenced(addr2);
+        asm volatile("vmsave %0" :: "a"(tdata->phys_addr1) : "memory");
+
+        u64 t     = measure_access_time(addr2);
+        time     += t;
     }
-    mmio_base = read_msr(0xC0010117);
-    // return;
-    // vmsa_pp_init(&pp);
-    // //vmsa_pp_calibrate(&pp, 1000, 10);
-    // for (offset = 0; offset < PAGE_SIZE; offset += 64)
-    // {
-    //     //offset = 0x640;
-    //     //volatile uint8_t *addr = (uint8_t *)tdata->lin_addr + offset;
-    //     //phys_addr_t pa     = tdata->phys_addr1 + offset;
 
-    //     // *(volatile uint8_t *)addr;
-    //     // u64 time = measure_access_time(addr);
-    //     // pr_info("Access time for %px: %llu cycles\n", addr, time);
+    pr_info("%-30s -> avg: %llu cycles | hits: %llu misses: %llu, ITERATIONS: %u\n",
+        "vmsave (uTag(PA) = uTag(VA))", time / ITERATIONS, l1_hits, l1_misses, ITERATIONS);
 
-    //     // flush_cache_line_fenced((void *)addr);
-    //     // time = measure_access_time(addr);
-    //     // pr_info("Access time after flush for %px: %llu cycles\n", addr, time);
-    //     was_hit = 0;
-    //     for (int j = 0; j < 200; j++)
-    //     {
-    //         //ibs_analysis_opcode(OP_VMLOAD, j, set_asid_bits(tdata->phys_addr1, 0x7), tdata->phys_addr1, ptr);
-            
-    //     }
-    //     pr_info("Offset 0x%x: was hit %d times out of 200\n", offset, was_hit);
-    //     // if (was_hit > 200){
-    //     //     pr_info("was evicted\n");
-    //     // }else{
-    //     //     pr_info("was not evicted\n");
-    //     // }
+    time = 0;
+    l1_hits = 0;
+    l1_misses = 0;
+    for (int j = 0; j < ITERATIONS; j++)
+    {
+        flush_cache_line_fenced(addr);
+        asm volatile("vmsave %0" :: "a"(tdata->phys_addr1) : "memory");
+        bool miss = is_l1_miss(addr);
+        l1_misses += miss;
+        l1_hits   += !miss;
 
-       
-    //     //break;
-    // }
-    pr_info("MMIO base: 0x%llx\n", mmio_base);
-    kfree(ptr);
+        flush_cache_line_fenced(addr);
+        asm volatile("vmsave %0" :: "a"(tdata->phys_addr1) : "memory");
+        u64 t     = measure_access_time(addr);
+        time     += t;
+    }
+
+    pr_info("%-30s -> avg: %llu cycles | hits: %llu misses: %llu, ITERATIONS: %u\n",
+        "vmsave (uTag(PA) != uTag(VA))", time / ITERATIONS, l1_hits, l1_misses, ITERATIONS);
+
+    pr_info("val: 0x%x\n", *(uint32_t *)((uint8_t *)addr));
+
+    time = 0;
+    l1_hits = 0;
+    l1_misses = 0;
+    for (int j = 0; j < ITERATIONS; j++)
+    {
+        flush_cache_line_fenced(addr);
+        READ_ONCE(*addr);
+        bool miss = is_l1_miss(addr);
+        l1_misses += miss;
+        l1_hits   += !miss;
+
+        flush_cache_line_fenced(addr);
+        READ_ONCE(*addr);
+        u64 t     = measure_access_time(addr);
+        time     += t;
+    }
+    
+    pr_info("%-30s -> avg: %llu cycles | hits: %llu misses: %llu, ITERATIONS: %u\n",
+        "READ_ONCE", time / ITERATIONS, l1_hits, l1_misses, ITERATIONS);    
+        
+        kfree(ptr);
 }
 
 static void check_rmp_protection(u64 vaddr)
 {
     struct opcode_result res;
-    map_physical_to_virtual_4lvl(0xa294bba0, vaddr);
+    map_physical_to_virtual(0xa0ce5100, vaddr);
 
     run_selected_opcode(OP_MOVL, 0xDEADBEEFDEADBEEF, vaddr, &res);
     pr_info("RESULT OF MOVL: rc=%d vec=%d\n", res.rc, res.vec);
@@ -609,11 +717,12 @@ static void check_rmp_protection(u64 vaddr)
 static int __init vmsave_module_init(void)
 {
     
-    // map_physical_to_virtual_4lvl(set_c_bit((u64)0x10b696000), (u64)0xffff8b2f8ba24000);
+    // map_physical_to_virtual(set_c_bit((u64)0x10b696000), (u64)0xffff8b2f8ba24000);
     // return -1;
     
     size_t buff_size = 4096 * 3;
     void *va_addr = vmalloc(buff_size);
+
 
     struct thread_data tdata;
     tdata.lin_addr = (u64)va_addr;
@@ -623,9 +732,9 @@ static int __init vmsave_module_init(void)
 
     tdata.phys_addr1 = virt_to_phys(src_buff1);
     tdata.phys_addr2 = virt_to_phys(src_buff2);
-    map_physical_to_virtual_4lvl(set_c_bit(virt_to_phys(src_buff1)), tdata.lin_addr);
-    map_physical_to_virtual_4lvl(virt_to_phys(src_buff1) + 0x1000, tdata.lin_addr + 0x1000);
-    map_physical_to_virtual_4lvl(virt_to_phys(src_buff1) + 0x2000, tdata.lin_addr + 0x2000);
+    map_physical_to_virtual(virt_to_phys(src_buff1), tdata.lin_addr);
+    map_physical_to_virtual(virt_to_phys(src_buff1) + 0x1000, tdata.lin_addr + 0x1000);
+    map_physical_to_virtual(virt_to_phys(src_buff1) + 0x2000, tdata.lin_addr + 0x2000);
     memset(src_buff1, 0xAA, buff_size);
     memset(src_buff2, 0xBB, buff_size);
 
@@ -647,13 +756,13 @@ static int __init vmsave_module_init(void)
 
     pr_info("Physical address 1: 0x%llx\n", tdata.phys_addr1);
     pr_info("Physical address 2: 0x%llx\n", tdata.phys_addr2);
-    pr_info("PA of allocated memory: %llx\n", get_physical_from_virtual_4lvl(tdata.lin_addr));
+    //pr_info("PA of allocated memory: %llx\n", get_physical_from_virtual_4lvl(tdata.lin_addr));
 
     // hexdump(src_buff1, 64);
     // pr_info("--------------------------------------------------\n");
     // hexdump(src_buff2, 64 );
 
-    //kfree(src_buff1);
+    kfree(src_buff1);
     kfree(src_buff2);
     vfree(va_addr);
     return -1;

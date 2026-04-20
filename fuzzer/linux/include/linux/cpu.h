@@ -30,6 +30,10 @@ struct cpu {
 	struct device dev;
 };
 
+extern u64 function_address;
+extern u64 recover_address;
+
+
 extern void boot_cpu_init(void);
 extern void boot_cpu_hotplug_init(void);
 extern void cpu_init(void);

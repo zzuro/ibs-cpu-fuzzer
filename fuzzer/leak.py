@@ -39,10 +39,7 @@ def ioctl_ack_set(fd: int, value: int) -> None:
         e = ctypes.get_errno()
         raise OSError(e, f"ioctl(ACK_SET) failed: {os.strerror(e)}")
     
-#1230 -> alot of cache hits for VMCB
-#0x0b0
 if __name__ == "__main__":
     fd = open_device()
-    offset = 0x0 
-    ioctl_ack_set(fd, offset)
+    ioctl_ack_set(fd, 1)
     os.close(fd)
