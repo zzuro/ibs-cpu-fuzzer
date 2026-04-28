@@ -122,7 +122,7 @@ def main() -> int:
     # files = sorted(LOG_DIR.glob("*.bin"))
     # print(f"Found {len(files)} binary trace files in {LOG_DIR}")
 
-    files = [Path("/mnt/ssd/ibs_log/ibs_\\x0b\\x04\\x9d\\xf4\\x00\\x00\\x00.bin")]
+    files = [Path("/mnt/truenas/ibs_log/ibs_\\x2e\\x09\\xa1\\x42\\x00\\x00\\x00.bin")]
     for bin_path in files:
         if "snap" in bin_path.name:
             continue
