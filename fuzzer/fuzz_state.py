@@ -149,3 +149,14 @@ class FuzzerStateSnapshot(ctypes.Structure):
 
         ("done", ctypes.c_bool),
     ]
+
+
+class UserSpaceArgs(ctypes.Structure):
+    _fields_ = [
+        ("asid", ctypes.c_uint32),
+        ("vmsa_pa", ctypes.c_uint64),
+        ("fail", ctypes.c_uint8),
+        ("leak_rax", ctypes.c_uint8),
+        ("cpu", ctypes.c_uint32),
+        ("vmcb_pa", ctypes.c_uint64),
+    ]

@@ -216,7 +216,6 @@ again:
 	__set_bit(asid, sev_asid_bitmap);
 
 	mutex_unlock(&sev_bitmap_lock);
-	pr_info("Assigned ASID %u to %s guest\n", asid, sev->es_active ? "SEV-ES" : "SEV");	
 	sev->asid = asid;
 	return 0;
 e_uncharge:
@@ -2150,6 +2149,8 @@ static int snp_bind_asid(struct kvm *kvm, int *error)
 
 	data.gctx_paddr = __psp_pa(sev->snp_context);
 	data.asid = sev_get_asid(kvm);
+	pr_info("Binding ASID %d to SEV-SNP context at gctx_paddr 0x%llx\n",
+		data.asid, data.gctx_paddr);
 	return sev_issue_cmd(kvm, SEV_CMD_SNP_ACTIVATE, &data, error);
 }
 
@@ -2187,6 +2188,13 @@ static int snp_launch_start(struct kvm *kvm, struct kvm_sev_cmd *argp)
 		return -ENOTTY;
 
 	start.gctx_paddr = __psp_pa(sev->snp_context);
+
+	pr_info("SEV-SNP launch start:\n");
+	pr_info("sev: 0x%llx\n", (u64)sev);
+	pr_info("snp_context: 0x%llx\n", (u64)sev->snp_context);
+	pr_info("gctx_paddr: 0x%llx\n", start.gctx_paddr);
+
+
 	start.policy = params.policy;
 	memcpy(start.gosvw, params.gosvw, sizeof(params.gosvw));
 	rc = __sev_issue_cmd(argp->sev_fd, SEV_CMD_SNP_LAUNCH_START, &start, &argp->error);
@@ -2408,7 +2416,6 @@ static int snp_launch_update_vmsa(struct kvm *kvm, struct kvm_sev_cmd *argp)
 	kvm_for_each_vcpu(i, vcpu, kvm) {
 		struct vcpu_svm *svm = to_svm(vcpu);
 		u64 pfn = __pa(svm->sev_es.vmsa) >> PAGE_SHIFT;
-
 		ret = sev_es_sync_vmsa(svm);
 		if (ret)
 			return ret;
@@ -2428,6 +2435,9 @@ static int snp_launch_update_vmsa(struct kvm *kvm, struct kvm_sev_cmd *argp)
 			return ret;
 		}
 
+		pr_info("CPU: %d, VMSA PA 0x%llx, VMCB PA 0x%llx", smp_processor_id(), (u64)__pa(svm->sev_es.vmsa), (u64)svm->current_vmcb->pa);
+		pr_info("\n");
+		pr_info("\n");
 		svm->vcpu.arch.guest_state_protected = true;
 		/*
 		 * SEV-ES (and thus SNP) guest mandates LBR Virtualization to

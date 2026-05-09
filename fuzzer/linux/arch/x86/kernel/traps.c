@@ -802,7 +802,7 @@ DEFINE_IDTENTRY_ERRORCODE(exc_general_protection)
 	unsigned long gp_addr;
 	//pr_info("GP fault ------------------\n");
 	if(regs->ip > function_address && regs->ip < recover_address){
-		pr_info(" - recovering from GP Fault at 0x%016lx failure at address 0x%llx\n",regs->ip, (u64)recover_address);
+		//pr_info(" - recovering from GP Fault at 0x%016lx failure at address 0x%llx\n",regs->ip, (u64)recover_address);
 		regs->ip = recover_address;
 		return;
 	}

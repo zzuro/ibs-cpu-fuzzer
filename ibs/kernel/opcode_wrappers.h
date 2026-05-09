@@ -51,7 +51,9 @@ enum opcode_id {
 	OP_MOVL,
 	OP_MAX,
 	OP_VMRUN,
-	OP_VMLOAD
+	OP_VMLOAD,
+	OP_SKINIT,
+	OP_HLT
 };
 
 struct opcode_desc {

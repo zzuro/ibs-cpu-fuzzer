@@ -1991,3 +1991,4 @@ u64 *kvm_tdp_mmu_fast_pf_get_last_sptep(struct kvm_vcpu *vcpu, gfn_t gfn,
 	 */
 	return rcu_dereference(sptep);
 }
+EXPORT_SYMBOL_GPL(kvm_tdp_mmu_fast_pf_get_last_sptep);

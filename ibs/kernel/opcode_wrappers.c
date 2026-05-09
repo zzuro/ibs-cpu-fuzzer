@@ -3,6 +3,7 @@
 #include <asm/extable.h>
 #include <asm/fpu/api.h>
 #include <asm/io.h>
+#include <asm/sev.h>
 
 #include "opcode_wrappers.h"
 
@@ -565,42 +566,51 @@ static __always_inline uint64_t measure_access_time(const uint8_t *addr)
 		return rc;						\
 	}
 
-#define DEFINE_OPCODE_WRAPPER_RMPUPDATE(fn_name, clobbers...)		\
-	int fn_name(u64 spa, u64 val, struct opcode_result *out)	\
-	{								\
-		int rc;							\
-		int vec;						\
-		u64 rip;						\
-		u32 eax_out;						\
+#define DEFINE_RMPUPDATE_PRE_GUEST_WRAPPER(fn_name, clobbers...)		\
+int fn_name(u64 paddr, u64 asid, struct opcode_result *out)			\
+{									\
+	struct rmp_state state = { 0 };					\
+	u64 ret;							\
+	int rc;								\
+	int vec;							\
+	u64 rip;							\
 									\
-		asm volatile(						\
-			"movl $0, %[rc]\n\t"				\
-			"movl $-1, %[vec]\n\t"				\
-			"mov %[spa], %%rax\n\t"				\
-			"mov %[val], %%rcx\n\t"				\
-			"leaq 1f(%%rip), %[rip]\n\t"			\
-			"1: rmpupdate %%rax, %%rcx\n\t"			\
-			"movl %%eax, %[eax_out]\n\t"			\
-			"2:\n\t"					\
-			".section .fixup,\"ax\"\n\t"			\
-			"3:\n\t"					\
-			"movl %%eax, %[vec]\n\t"				\
-			"movl $-1, %[rc]\n\t"				\
-			"jmp 2b\n\t"					\
-			".previous\n\t" _ASM_EXTABLE_FAULT(1b, 3b)	\
-			: [rc] "=&r"(rc), [vec] "=&r"(vec), [rip] "=&r"(rip), \
-			  [eax_out] "=&r"(eax_out)			\
-			: [spa] "r"(spa), [val] "r"(val)		\
-			: "rax", "rcx", "cc", "memory", ##clobbers);	\
+	state.assigned = 1;						\
+	state.pagesize = 0x1000;					\
+	state.immutable = 0;						\
+	state.asid = (u32)asid;						\
 									\
-		if (out) {						\
-			out->rc = rc;					\
-			out->vec = (rc == 0) ? (int)eax_out : vec;	\
-			out->rip = rip;					\
-		}							\
+	asm volatile(							\
+		"movl $0, %[rc]\n\t"					\
+		"movl $-1, %[vec]\n\t"				\
+		"mov %[paddr], %%rax\n\t"				\
+		"mov %[state], %%rcx\n\t"				\
+		"leaq 1f(%%rip), %[rip]\n\t"			\
+		"1: .byte 0xF2, 0x0F, 0x01, 0xFE\n\t" /* RMPUPDATE */\
+		"2:\n\t"						\
+		".section .fixup,\"ax\"\n\t"			\
+		"3:\n\t"						\
+		"movl %%eax, %[vec]\n\t"				\
+		"movl $-1, %[rc]\n\t"				\
+		"jmp 2b\n\t"					\
+		".previous\n\t"					\
+		_ASM_EXTABLE_FAULT(1b, 3b)			\
+		: [ret] "=a"(ret),					\
+		  [rc] "=&r"(rc),					\
+		  [vec] "=&r"(vec),					\
+		  [rip] "=&r"(rip)					\
+		: [paddr] "r"(paddr),				\
+		  [state] "r"((unsigned long)&state)		\
+		: "rcx", "cc", "memory", ##clobbers);		\
 									\
-		return rc;						\
-	}
+	if (out) {							\
+		out->rc = rc;						\
+		out->vec = vec;						\
+		out->rip = rip;						\
+	}								\
+									\
+	return rc ? rc : ret;					\
+}
 
 #define DEFINE_OPCODE_WRAPPER_ECX_EDX_EAX_OUT0(fn_name, insn_asm, clobbers...) \
 	int fn_name(u64 arg0, u64 arg1, struct opcode_result *out)	\
@@ -688,6 +698,8 @@ struct opcode_desc opcode_table[] = {
 	OPENTRY(OP_MOVL, true, true, true),
 	OPENTRY(OP_VMRUN, true, true, false),
 	OPENTRY(OP_VMLOAD, true, true, false),
+	OPENTRY(OP_SKINIT, true, true, true),
+	OPENTRY(OP_HLT, true, false, false),
 	{},
 };
 
@@ -695,7 +707,9 @@ DEFINE_OPCODE_WRAPPER0(try_nop, "nop")
 DEFINE_OPCODE_WRAPPER0(try_wbinvd, "wbinvd")
 DEFINE_OPCODE_WRAPPER0(try_pause, "pause")
 DEFINE_OPCODE_WRAPPER_EAX_ECX(try_cpuid, "cpuid")
+DEFINE_OPCODE_WRAPPER_EAX_ECX(try_skinit, "SKINIT")
 DEFINE_OPCODE_WRAPPER0(try_ud2, "ud2")
+DEFINE_OPCODE_WRAPPER0(try_hlt, "STI;hlt")
 
 DEFINE_OPCODE_WRAPPER0(try_in_imm_e4, ".byte 0xe4, 0x88")
 DEFINE_OPCODE_WRAPPER0(try_in_imm_e5, ".byte 0xe5, 0x80")
@@ -733,7 +747,7 @@ DEFINE_OPCODE_WRAPPER_MEMARG0(try_sgdt, "sgdt %[mem]")
 DEFINE_OPCODE_WRAPPER_RAX(try_monitor, "monitor")
 
 DEFINE_OPCODE_WRAPPER_RAX_RCX(try_udbgrd, ".byte 0x0f, 0x0e")
-DEFINE_OPCODE_WRAPPER_RMPUPDATE(test_rmpupdate)
+DEFINE_RMPUPDATE_PRE_GUEST_WRAPPER(try_rmpupdate)
 
 DEFINE_OPCODE_WRAPPER_ECX_EDX_EAX_OUT0(try_rdtscp, "rdtscp")
 DEFINE_OPCODE_WRAPPER0(try_lfence, "lfence")
@@ -1186,7 +1200,7 @@ int run_selected_opcode(enum opcode_id id, u64 arg0, u64 arg1,
 	case OP_UDBGRD:
 		return try_udbgrd(arg0, arg1, out);
 	case OP_RMPUPDATE:
-		return test_rmpupdate(arg0, arg1, out);
+		return try_rmpupdate(arg0, arg1, out);
 	case OP_LFENCE:
 		return try_lfence(arg0, arg1, out);
 	case OP_RDTSCP:
@@ -1213,6 +1227,10 @@ int run_selected_opcode(enum opcode_id id, u64 arg0, u64 arg1,
 		return try_vmrun(arg0, arg1, out);
 	case OP_VMLOAD:
 		return try_vmload(arg0, arg1, out);
+	case OP_SKINIT:
+		return try_skinit(arg0, arg1, out);
+	case OP_HLT:
+		return try_hlt(arg0, arg1, out);
 	default:
 		if (out) {
 			out->rc = -1;

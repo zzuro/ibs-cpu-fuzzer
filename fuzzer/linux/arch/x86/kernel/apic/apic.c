@@ -407,6 +407,13 @@ int setup_APIC_eilvt(u8 offset, u8 vector, u8 msg_type, u8 mask)
 }
 EXPORT_SYMBOL_GPL(setup_APIC_eilvt);
 
+
+int read_APIC_wrapper(u32 reg)
+{
+	return apic_read(reg);
+}
+EXPORT_SYMBOL_GPL(read_APIC_wrapper);
+
 /*
  * Program the next event, relative to now
  */

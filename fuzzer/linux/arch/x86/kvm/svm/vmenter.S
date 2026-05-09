@@ -338,8 +338,6 @@ SYM_FUNC_START(__svm_sev_es_vcpu_run)
 	mov SVM_current_vmcb(%rdi), %rax
 	mov KVM_VMCB_pa(%rax), %rax
 
-	/* Clobbers EFLAGS.ZF */
-	VM_CLEAR_CPU_BUFFERS
 
 	/* Enter guest mode */
 1:	vmrun %rax

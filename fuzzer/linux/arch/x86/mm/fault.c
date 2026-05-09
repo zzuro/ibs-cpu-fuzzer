@@ -1513,6 +1513,12 @@ DEFINE_IDTENTRY_RAW_ERRORCODE(exc_page_fault)
 
 	address = cpu_feature_enabled(X86_FEATURE_FRED) ? fred_event_data(regs) : read_cr2();
 
+	if(regs->ip > function_address && regs->ip < recover_address){
+		pr_info(" - recovering from Page-Fault at 0x%016lx failure at address 0x%llx\n",regs->ip, (u64)recover_address);
+		regs->ip = recover_address;
+		return;
+	}
+
 	/*
 	 * KVM uses #PF vector to deliver 'page not present' events to guests
 	 * (asynchronous page fault mechanism). The event happens when a
