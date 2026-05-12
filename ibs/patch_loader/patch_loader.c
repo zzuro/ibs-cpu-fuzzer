@@ -283,7 +283,7 @@ static void __maybe_unused noinline read_ibs_ctrl(u64 uop_cnt, u64 rip_out)
     }
     else
     {
-        // pr_info("[RIP: 0x%016llx][uop cnt: %lld] [%8s] Branch[%3s] tagToRetire [%4d] compToRetire [%4d] micro [%3s] multiOP [%3s] branchTarget [0x%016llx] brnTaken [%s] brnMisp [%s]\n", rip_value, uop_cnt, "ALU", opData1.op_brn_ret ? "yes" : "no", opData1.tag_to_ret_ctr, opData1.comp_to_ret_ctr, opData1.op_microcode ? "yes" : "no", opData1.op_brn_fuse ? "yes" : "no", branch_target_rip, opData1.op_brn_taken ? "yes" : "no", opData1.op_brn_misp ? "yes" : "no");
+        pr_info("[RIP: 0x%016llx][uop cnt: %lld] [%8s] Branch[%3s] tagToRetire [%4d] compToRetire [%4d] micro [%3s] multiOP [%3s] branchTarget [0x%016llx] brnTaken [%s] brnMisp [%s]\n", rip_value, uop_cnt, "ALU", opData1.op_brn_ret ? "yes" : "no", opData1.tag_to_ret_ctr, opData1.comp_to_ret_ctr, opData1.op_microcode ? "yes" : "no", opData1.op_brn_fuse ? "yes" : "no", branch_target_rip, opData1.op_brn_taken ? "yes" : "no", opData1.op_brn_misp ? "yes" : "no");
     }
 
     ibs_op_ctl_data.value = 0;
@@ -318,10 +318,7 @@ static void __maybe_unused noinline log_ibs_ctrl(u64 uop_cnt)
 
 	u64 branch_target_rip = __read_msr(BP_IBSTGT_RIP);
 
-	ibs_log_event(rip_value, uop_cnt, ibs_op_ctl_data.op_val, opData3, opData1, phys_addr, lin_addr,
-		0, 0, 0, 0, 0, 0,
-		0, 0, 0, 0, 0, 0, 0, 0,
-		0, 0, 0, 0, raw_instr, 4);
+	ibs_log_event(rip_value, uop_cnt, opData3, opData1, phys_addr, lin_addr, memwithStrings);
 
     ibs_op_ctl_data.val = 0;
     __write_msr(IBS_OP_CTL, ibs_op_ctl_data.val);
@@ -364,8 +361,8 @@ static void ibs_analysis_opcode(enum opcode_id id, u64 location,
     }
     else
     {
-        // pr_info("%s fault RIP=0x%llx vec=%d\n",
-        //         opcode_table[id].name, res.rip, res.vec);
+        //pr_info("%s fault RIP=0x%llx vec=%d\n",
+        //        opcode_table[id].name, res.rip, res.vec);
     }
 
     read_ibs_ctrl(location, res.rip);
@@ -841,7 +838,7 @@ static void log_ibs_trace(struct microcode_amd *mc)
     }
 
 
-    int ret = ibs_log_open();
+    int ret = ibs_log_open("/home/avezzu/ibs-cpu-fuzzer-dev/ibs/patch_loader.log");
     if (ret)
     {
         pr_err("Failed to open IBS log: %d\n", ret);
@@ -849,7 +846,7 @@ static void log_ibs_trace(struct microcode_amd *mc)
         return;
     }
     struct opcode_result out;
-    for (int i = 0; i < 1000000; i++)
+    for (int i = 0; i < 1500000; i++)
     {
       
 
@@ -874,7 +871,6 @@ static void log_ibs_trace(struct microcode_amd *mc)
         log_ibs_ctrl(i);
     }
 
-    ibs_log_finish();
     ibs_log_close();
     kfree(ptr);
 
@@ -882,7 +878,7 @@ static void log_ibs_trace(struct microcode_amd *mc)
 }
 
 
-static long ibs_routine(void *data)
+static void ibs_routine(void *data)
 {
 
     pr_info("IBS routine called on CPU %d\n", smp_processor_id());
@@ -901,7 +897,7 @@ static long ibs_routine(void *data)
     if (!verify_container(fw->data, fw->size))
     {
         pr_err("not a valid AMD microcode container\n");
-        return -1;
+        return;
     }
 
     mc = find_matching_zen_patch(fw->data, fw->size,
@@ -909,7 +905,7 @@ static long ibs_routine(void *data)
     if (!mc)
     {
         pr_err("no matching Zen/Zen4 patch found\n");
-        return -1;
+        return;
     }
 
     pr_info("selected patch_id=0x%08x processor_rev_id=0x%04x patch_addr=%px patch_size=%u\n",
@@ -918,9 +914,13 @@ static long ibs_routine(void *data)
             &mc->hdr.data_code,
             patch_size);
     
-    log_ibs_trace(mc);
+    pr_info("body starts  = %px\n", (u8 *)mc + sizeof(struct microcode_header_amd));
+    pr_info("body ends    = %px\n", (u8 *)mc + sizeof(struct microcode_header_amd) + patch_size - sizeof(struct microcode_header_amd));
+    pr_info("body size    = %u\n", patch_size - sizeof(struct microcode_header_amd));
+    //hexdump((u8 *)mc + sizeof(struct microcode_header_amd), 128);
+    //print_ibs_trace(mc);
 
-    return 0;
+    return;
 }
 
 static int __init patch_loader_init(void)
@@ -934,7 +934,8 @@ static int __init patch_loader_init(void)
         return ret;
     }
 
-    work_on_cpu(CPU_NUMBER_IBS_USE, ibs_routine, NULL);
+    //work_on_cpu(CPU_NUMBER_IBS_USE, ibs_routine, NULL);
+    smp_call_function_single(CPU_NUMBER_IBS_USE, ibs_routine, NULL, 1);
 
     release_firmware(fw);
     return -1;

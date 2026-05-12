@@ -297,3 +297,5 @@ fuzzer-state
 
 !fuzzer/linux/
 !fuzzer/linux/**
+
+find_microtags
