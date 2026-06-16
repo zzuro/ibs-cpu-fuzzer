@@ -580,6 +580,13 @@ static struct microcode_amd *find_matching_zen_patch(const u8 *data,
     const u8 *p = data;
     size_t left = size;
 
+    struct microcode_amd *best_mc = NULL;
+    u32 best_patch_size = 0;
+    u32 best_patch_id = 0;
+
+    if (patch_size_out)
+        *patch_size_out = 0;
+
     while (left >= CONTAINER_HDR_SIZE)
     {
         const u32 *container_hdr = (const u32 *)p;
@@ -596,13 +603,13 @@ static struct microcode_amd *find_matching_zen_patch(const u8 *data,
         if (magic != UCODE_MAGIC)
         {
             pr_err("bad AMD microcode container magic: 0x%08x\n", magic);
-            return NULL;
+            return best_mc;
         }
 
         if (left < CONTAINER_HDR_SIZE + first_size)
         {
             pr_err("truncated first section\n");
-            return NULL;
+            return best_mc;
         }
 
         /*
@@ -633,13 +640,13 @@ static struct microcode_amd *find_matching_zen_patch(const u8 *data,
             if (sec_size < sizeof(struct microcode_header_amd))
             {
                 pr_err("patch section too small: %u\n", sec_size);
-                return NULL;
+                return best_mc;
             }
 
             if (qleft < SECTION_HDR_SIZE + sec_size)
             {
                 pr_err("truncated patch section\n");
-                return NULL;
+                return best_mc;
             }
 
             mc = (struct microcode_amd *)(q + SECTION_HDR_SIZE);
@@ -658,8 +665,15 @@ static struct microcode_amd *find_matching_zen_patch(const u8 *data,
 
             if (patch_cpuid == cpuid_eax)
             {
-                *patch_size_out = sec_size;
-                return mc;
+                if (!best_mc || mc->hdr.patch_id > best_patch_id)
+                {
+                    best_mc = mc;
+                    best_patch_id = mc->hdr.patch_id;
+                    best_patch_size = sec_size;
+
+                    pr_info("new best matching patch: patch_id=0x%08x size=%u\n",
+                            best_patch_id, best_patch_size);
+                }
             }
 
         next_patch:
@@ -671,9 +685,6 @@ static struct microcode_amd *find_matching_zen_patch(const u8 *data,
          * If there are multiple AMD containers glued together, try to advance.
          * This is intentionally conservative.
          */
-        if (qleft == left)
-            break;
-
         if (qleft == 0)
             break;
 
@@ -681,7 +692,21 @@ static struct microcode_amd *find_matching_zen_patch(const u8 *data,
         left = qleft;
     }
 
-    return NULL;
+    if (best_mc)
+    {
+        if (patch_size_out)
+            *patch_size_out = best_patch_size;
+
+        pr_info("selected newest matching patch: patch_id=0x%08x size=%u\n",
+                best_patch_id, best_patch_size);
+    }
+    else
+    {
+        pr_info("no matching Zen microcode patch found for cpuid_eax=0x%08x\n",
+                cpuid_eax);
+    }
+
+    return best_mc;
 }
 
 static const struct firmware *fw;
@@ -917,12 +942,20 @@ static void ibs_routine(void *data)
     pr_info("body starts  = %px\n", (u8 *)mc + sizeof(struct microcode_header_amd));
     pr_info("body ends    = %px\n", (u8 *)mc + sizeof(struct microcode_header_amd) + patch_size - sizeof(struct microcode_header_amd));
     pr_info("body size    = %u\n", patch_size - sizeof(struct microcode_header_amd));
-    //hexdump((u8 *)mc + sizeof(struct microcode_header_amd), 128);
     //print_ibs_trace(mc);
+    //log_ibs_trace(mc);
+    // pr_info("header size: %zu\n", sizeof(struct microcode_header_amd));
+    
+    struct opcode_result out;
+    run_selected_opcode(OP_WRMSR, MSR_AMD64_PATCH_LOADER, &mc->hdr.data_code, &out);
+    
+    pr_info("opcode_result: rc=%d rip=0x%llx vec=%d\n", out.rc, out.rip, out.vec);
 
     return;
 }
 
+
+#define NUM_PAGES 1
 static int __init patch_loader_init(void)
 {
     int ret;
@@ -935,7 +968,36 @@ static int __init patch_loader_init(void)
     }
 
     //work_on_cpu(CPU_NUMBER_IBS_USE, ibs_routine, NULL);
-    smp_call_function_single(CPU_NUMBER_IBS_USE, ibs_routine, NULL, 1);
+    //smp_call_function_single(CPU_NUMBER_IBS_USE, ibs_routine, NULL, 1);
+
+    void *buf;
+    unsigned long addr;
+
+    buf = (void *)__get_free_pages(GFP_KERNEL | __GFP_ZERO, get_order(PAGE_SIZE * NUM_PAGES));
+    if (!buf)
+        return -ENOMEM;
+
+    addr = (unsigned long)buf;
+
+    /* Mark pages uncacheable */
+    ret = set_memory_uc(addr, NUM_PAGES);
+    if (ret) {
+        free_pages(addr, get_order(PAGE_SIZE * NUM_PAGES));
+        return ret;
+    }
+
+    READ_ONCE(((u8 *)addr)[0]);
+    READ_ONCE(((u8 *)addr)[1]);
+    READ_ONCE(((u8 *)addr)[2]);
+    READ_ONCE(((u8 *)addr)[3]);
+
+    u64 time = measure_access_time((void *)addr);
+    pr_info("Initial access time (uncached): %llu cycles\n", time);
+
+    /* Before freeing, restore write-back */
+    set_memory_wb(addr, NUM_PAGES);
+    free_pages(addr, get_order(PAGE_SIZE * NUM_PAGES));
+
 
     release_firmware(fw);
     return -1;

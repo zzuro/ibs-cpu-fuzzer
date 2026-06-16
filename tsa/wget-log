@@ -1,0 +1,11 @@
+--2026-05-14 22:44:57--  https://gitlab.com/kernel-firmware/linux-firmware/-/raw/main/amd-ucode/microcode_amd_fam19h.bin?ref_type=heads
+Resolving gitlab.com (gitlab.com)... 172.65.251.78, 2606:4700:90:0:f22e:fbec:5bed:a9b9
+Connecting to gitlab.com (gitlab.com)|172.65.251.78|:443... connected.
+HTTP request sent, awaiting response... 200 OK
+Length: 128644 (126K) [application/octet-stream]
+Saving to: ‘microcode_amd_fam19h.bin?ref_type=heads’
+
+microcode_amd_fam19h.bin?ref_type=heads                0%[                                                                                                                     ]       0  --.-KB/s               microcode_amd_fam19h.bin?ref_type=heads              100%[====================================================================================================================>] 125.63K  --.-KB/s    in 0.1s    
+
+2026-05-14 22:44:58 (986 KB/s) - ‘microcode_amd_fam19h.bin?ref_type=heads’ saved [128644/128644]
+

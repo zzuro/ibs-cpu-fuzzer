@@ -3,7 +3,7 @@ def get_bit(va: int, bit: int) -> int:
 
 
 def calculate_zen_utag(ptr: int) -> int:
-    va = ptr & 0xFFFFFFFFFFFFFFFF
+    va = ptr & 0xFFFFFFFFFFFFFFFF  # emulate uint64_t cast
 
     u0 = (
         get_bit(va, 12) ^ get_bit(va, 13) ^ get_bit(va, 14) ^ get_bit(va, 15) ^
@@ -33,6 +33,6 @@ def calculate_zen_utag(ptr: int) -> int:
 
 
 if __name__ == "__main__":
-    addr = 0xff0000019486e000
+    addr = 0xffffdf7000b40
     utag = calculate_zen_utag(addr)
     print(f"utag: {utag:#04x}")

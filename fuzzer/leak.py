@@ -57,6 +57,6 @@ def ioclt_set_args(fd: int, asid: int, vmsa_pa: int) -> None:
     
 if __name__ == "__main__":
     fd = open_device()
-    ioclt_set_args(fd, 2, 0x124f4c000)
-    ioctl_ack_set(fd, 0x1)
+    #ioclt_set_args(fd, 2, 0x124f4c000)
+    ioctl_ack_set(fd, 0x1953000)
     os.close(fd)

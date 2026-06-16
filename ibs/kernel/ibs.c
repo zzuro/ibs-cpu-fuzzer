@@ -452,8 +452,8 @@ static void ibs_analysis_opcode(enum opcode_id id, u64 location,
     }
     else
     {
-        // pr_info("%s fault RIP=0x%llx vec=%d\n",
-        //         opcode_table[id].name, res.rip, res.vec);
+        pr_info("%s fault RIP=0x%llx vec=%d\n",
+                opcode_table[id].name, res.rip, res.vec);
     }
 
     read_ibs_ctrl(location, res.rip);
@@ -516,7 +516,7 @@ static inline u64 set_asid_bits(u64 val, u8 asid)
 
 static inline u64 set_c_bit(u64 val)
 {
-    return val | (1ULL << 51) ;
+    return val | (1ULL << 46) ;
 }
 
 static inline unsigned long read_cr3(void) {
@@ -602,7 +602,7 @@ uint64_t calculate_zen_utag(void *ptr) {
 
 
 #define ITERATIONS 200
-static void check_physcial_uTag(void *data)
+static void ibs_routine_µtag(void *data)
 {
     pr_info("IBS routine called on CPU %d\n", smp_processor_id());
     ibs_apic_exit(NULL);
@@ -825,7 +825,7 @@ static void ibs_routine_testest(void *data)
     
 }
 
-static void ibs_routine__(void *data)
+static void ibs_routine(void *data)
 {
     pr_info("IBS routine called on CPU %d\n", smp_processor_id());
     ibs_apic_exit(NULL);
@@ -848,7 +848,7 @@ static void ibs_routine__(void *data)
    
     for (int j = 0; j < 200; j++)
     {
-        ibs_analysis_opcode(OP_IN_DX_EAX, j, 0x80, tdata->lin_addr, ptr);
+        ibs_analysis_opcode(OP_VMSAVE, j, set_c_bit(tdata->phys_addr1), 0, ptr);
     }
     kfree(ptr);
 }
@@ -1388,7 +1388,7 @@ next_patch:
 
 #include <linux/firmware.h>
 static const struct firmware *fw;
-static void ibs_routine(void * data)
+static void ibs_routine____(void * data)
 {
 
     pr_info("IBS routine called on CPU %d\n", smp_processor_id());
@@ -1693,7 +1693,7 @@ static void smm_lock(void *data)
 }
 
 #define SLB_SIZE (64 * 1024)
-static void ibs_routine_trace(void *data)
+static void ibs_routine_tmptmp(void *data)
 {
     pr_info("IBS routine called on CPU %d\n", smp_processor_id());
     ibs_apic_exit(NULL);
@@ -1716,28 +1716,28 @@ static void ibs_routine_trace(void *data)
     for (int j = 0; j < 6000; j++)
     {
         
-        ibs_analysis_opcode(OP_WRMSR, j, 0x0000010B, 1, ptr);
+        //ibs_analysis_opcode(OP_WRMSR, j, 0x0000010B, 1, ptr);
         
-        // write_ibs_ctrl(j);
+        write_ibs_ctrl(j);
 
-        // READ_ONCE(ptr[1]);
-        // READ_ONCE(ptr[2]);
-        // READ_ONCE(ptr[3]);
-        // READ_ONCE(ptr[4]);
-        // READ_ONCE(ptr[5]);
-        // READ_ONCE(ptr[6]);
+        READ_ONCE(ptr[1]);
+        READ_ONCE(ptr[2]);
+        READ_ONCE(ptr[3]);
+        READ_ONCE(ptr[4]);
+        READ_ONCE(ptr[5]);
+        READ_ONCE(ptr[6]);
 
-        // x86_clear_cpu_buffers();
+        x86_clear_cpu_buffers();
 
-        // READ_ONCE(ptr[1]);
-        // READ_ONCE(ptr[2]);
-        // READ_ONCE(ptr[3]);
-        // READ_ONCE(ptr[4]);
-        // READ_ONCE(ptr[5]);
-        // READ_ONCE(ptr[6]);
+        READ_ONCE(ptr[1]);
+        READ_ONCE(ptr[2]);
+        READ_ONCE(ptr[3]);
+        READ_ONCE(ptr[4]);
+        READ_ONCE(ptr[5]);
+        READ_ONCE(ptr[6]);
 
 
-        // read_ibs_ctrl(j, res.rip);
+        read_ibs_ctrl(j, res.rip);
     }
 
     kfree(ptr);
@@ -1986,8 +1986,6 @@ static void ibs_routine_rmp(void* data)
         return;
     }
 
-    function_address = (u64) ibs_routine;
-	recover_address = (u64) &&recovery_label;
 
     int ret = rmpupdate_firmware(virt_to_phys(ptr));
     if(ret)

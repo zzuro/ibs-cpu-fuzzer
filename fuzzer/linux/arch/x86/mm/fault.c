@@ -1206,7 +1206,7 @@ do_kern_addr_fault(struct pt_regs *regs, unsigned long hw_error_code,
 		}
 	}
 	
-	if (address == 0xfffffe00000000d0ull) {
+	if (regs->ip >= function_address && regs->ip < recover_address) {
 		pr_info("Custom page fault at address 0x%lx\n", address);
 		pr_info(" - recovering from Page Fault at 0x%016lx failure and setting new IP to 0x%llx\n",regs->ip, (u64)recover_address);
 		regs->ip = recover_address;
@@ -1513,9 +1513,14 @@ DEFINE_IDTENTRY_RAW_ERRORCODE(exc_page_fault)
 
 	address = cpu_feature_enabled(X86_FEATURE_FRED) ? fred_event_data(regs) : read_cr2();
 
-	if(regs->ip > function_address && regs->ip < recover_address){
-		pr_info(" - recovering from Page-Fault at 0x%016lx failure at address 0x%llx\n",regs->ip, (u64)recover_address);
+	if(regs->ip >= function_address && regs->ip < recover_address){
+		//pr_info(" [*] recovering from Page-Fault at 0x%016lx failure at address 0x%llx\n",regs->ip, (u64)recover_address);
+
+		write_cr2(0);
+
+		state = irqentry_enter(regs);
 		regs->ip = recover_address;
+		irqentry_exit(regs, state);
 		return;
 	}
 
